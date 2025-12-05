@@ -178,11 +178,10 @@ measure_cleanup() {
 
 add_cleaned_space() {
     local cleaned_kb=$1
-    if [ -n "$cleaned_kb" ]; then
-        cleaned_kb=$(echo "$cleaned_kb" | sed 's/[^0-9]//g')
-        if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
-            TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
-        fi
+    cleaned_kb=${cleaned_kb:-0}
+    cleaned_kb=$(echo "$cleaned_kb" | sed 's/[^0-9-]//g')
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" != "" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
+        TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
     fi
 }
 
@@ -346,13 +345,58 @@ if [ "$CLEAN_APT_CACHE" = "TRUE" ] || [ "$CLEAN_APT_CACHE" = "true" ]; then
     fi
 fi
 
-run_task "Old kernel packages" \
-    "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y" \
-    "$CLEAN_OLD_KERNELS"
+if [ "$CLEAN_OLD_KERNELS" = "TRUE" ] || [ "$CLEAN_OLD_KERNELS" = "true" ]; then
+    echo -n "[$(date)] : Old kernel packages... "
+    before_kb=$(measure_cleanup /boot)
+    kernel_pkgs=$(dpkg -l | grep -E '^ii.*linux-(image|headers)-[0-9]' | awk '{print $2}' | wc -l)
+    if DEBIAN_FRONTEND=noninteractive apt-get autoremove -y >/dev/null 2>&1; then
+        after_kb=$(measure_cleanup /boot)
+        cleaned_kb=$((before_kb - after_kb))
+        [ "$cleaned_kb" -lt 0 ] && cleaned_kb=0
+        if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
+            add_cleaned_space "$cleaned_kb"
+            cleaned_formatted=$(convert_space $cleaned_kb)
+            echo "OK (freed: $cleaned_formatted)"
+        else
+            echo "OK"
+        fi
+        TASKS_SUCCESS+=("Old kernel packages")
+    else
+        echo "FAIL"
+        TASKS_FAILED+=("Old kernel packages")
+        FINAL_STATUS='FAILED'
+    fi
+fi
 
-run_task "Thumbnail cache" \
-    "rm -rf /home/*/.cache/thumbnails/* 2>/dev/null; true" \
-    "$CLEAN_THUMBNAIL_CACHE"
+if [ "$CLEAN_THUMBNAIL_CACHE" = "TRUE" ] || [ "$CLEAN_THUMBNAIL_CACHE" = "true" ]; then
+    echo -n "[$(date)] : Thumbnail cache... "
+    thumbnail_dirs="/home/*/.cache/thumbnails /root/.cache/thumbnails"
+    before_kb=0
+    for thumb_dir in $thumbnail_dirs; do
+        if [ -d "$thumb_dir" ]; then
+            dir_size=$(du -sk "$thumb_dir" 2>/dev/null | cut -f1)
+            [ -n "$dir_size" ] && before_kb=$((before_kb + dir_size))
+        fi
+    done
+    rm -rf /home/*/.cache/thumbnails/* /root/.cache/thumbnails/* 2>/dev/null
+    after_kb=0
+    for thumb_dir in $thumbnail_dirs; do
+        if [ -d "$thumb_dir" ]; then
+            dir_size=$(du -sk "$thumb_dir" 2>/dev/null | cut -f1)
+            [ -n "$dir_size" ] && after_kb=$((after_kb + dir_size))
+        fi
+    done
+    cleaned_kb=$((before_kb - after_kb))
+    [ "$cleaned_kb" -lt 0 ] && cleaned_kb=0
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Thumbnail cache")
+fi
 
 if [ "$CLEAN_TEMP_FILES" = "TRUE" ] || [ "$CLEAN_TEMP_FILES" = "true" ]; then
     echo -n "[$(date)] : Temp files (>${TEMP_FILES_RETENTION_DAYS}d)... "
@@ -409,7 +453,8 @@ echo "--- SERVICE LOGS CLEANUP (>${SERVICE_LOGS_RETENTION_DAYS}d) ---"
 if [ "$CLEAN_NGINX_LOGS" = "TRUE" ] || [ "$CLEAN_NGINX_LOGS" = "true" ]; then
     echo -n "[$(date)] : Nginx logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/nginx ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -422,7 +467,8 @@ fi
 if [ "$CLEAN_APACHE_LOGS" = "TRUE" ] || [ "$CLEAN_APACHE_LOGS" = "true" ]; then
     echo -n "[$(date)] : Apache logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/apache2 ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -435,7 +481,8 @@ fi
 if [ "$CLEAN_EXIM_LOGS" = "TRUE" ] || [ "$CLEAN_EXIM_LOGS" = "true" ]; then
     echo -n "[$(date)] : Exim4 logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/exim4 ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -452,7 +499,8 @@ run_task "Dovecot logs" \
 if [ "$CLEAN_CLAMAV_LOGS" = "TRUE" ] || [ "$CLEAN_CLAMAV_LOGS" = "true" ]; then
     echo -n "[$(date)] : ClamAV logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/clamav ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -465,7 +513,8 @@ fi
 if [ "$CLEAN_ROUNDCUBE_LOGS" = "TRUE" ] || [ "$CLEAN_ROUNDCUBE_LOGS" = "true" ]; then
     echo -n "[$(date)] : Roundcube logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/roundcube ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -482,7 +531,8 @@ run_task "Fail2ban logs" \
 if [ "$CLEAN_HESTIA_LOGS" = "TRUE" ] || [ "$CLEAN_HESTIA_LOGS" = "true" ]; then
     echo -n "[$(date)] : HestiaCP logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/hestia ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -499,7 +549,8 @@ run_task "PHP-FPM logs" \
 if [ "$CLEAN_MYSQL_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_LOGS" = "true" ]; then
     echo -n "[$(date)] : MySQL/MariaDB logs... "
     cleaned_kb=$(clean_rotated_logs /var/log/mysql ${SERVICE_LOGS_RETENTION_DAYS})
-    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+    cleaned_kb=${cleaned_kb:-0}
+    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         add_cleaned_space "$cleaned_kb"
         cleaned_formatted=$(convert_space $cleaned_kb)
         echo "OK (freed: $cleaned_formatted)"
@@ -857,10 +908,12 @@ if [ "$df_cleaned_space_kb" -lt 0 ]; then
 fi
 df_cleaned_space_formatted=$(convert_space $df_cleaned_space_kb)
 
-if [ "$TOTAL_CLEANED_KB" -gt 0 ]; then
+if [ "$TOTAL_CLEANED_KB" -gt 0 ] 2>/dev/null; then
     cleaned_space_formatted=$(convert_space $TOTAL_CLEANED_KB)
+    cleaned_space_kb=$TOTAL_CLEANED_KB
 else
     cleaned_space_formatted=$df_cleaned_space_formatted
+    cleaned_space_kb=$df_cleaned_space_kb
     TOTAL_CLEANED_KB=$df_cleaned_space_kb
 fi
 
@@ -870,7 +923,7 @@ echo "Cleanup completed: $FINAL_STATUS"
 echo "Initial Available: $initial_space_formatted"
 echo "Final Available: $final_space_formatted"
 echo "Space Cleaned (measured): $cleaned_space_formatted"
-if [ "$TOTAL_CLEANED_KB" -gt 0 ] && [ "$df_cleaned_space_kb" -gt 0 ] && [ "$TOTAL_CLEANED_KB" != "$df_cleaned_space_kb" ]; then
+if [ "$cleaned_space_kb" -gt 0 ] 2>/dev/null && [ "$df_cleaned_space_kb" -gt 0 ] 2>/dev/null && [ "$cleaned_space_kb" != "$df_cleaned_space_kb" ] 2>/dev/null; then
     echo "Space Cleaned (df diff): $df_cleaned_space_formatted"
 fi
 echo "Tasks: ${#TASKS_SUCCESS[@]} OK, ${#TASKS_FAILED[@]} FAIL, ${#TASKS_SKIPPED[@]} SKIP"
