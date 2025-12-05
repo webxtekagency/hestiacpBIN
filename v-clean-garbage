@@ -156,25 +156,34 @@ convert_space() {
 
 measure_cleanup() {
     local path="$1"
-    local before_kb=0
-    local after_kb=0
+    local size_kb=0
     
     if [ -e "$path" ]; then
         if [ -d "$path" ]; then
-            before_kb=$(du -sk "$path" 2>/dev/null | cut -f1)
-            [ -z "$before_kb" ] && before_kb=0
+            local du_output=$(du -sk "$path" 2>/dev/null | cut -f1)
+            if [ -n "$du_output" ] && [ "$du_output" -gt 0 ] 2>/dev/null; then
+                size_kb=$du_output
+            fi
         elif [ -f "$path" ]; then
-            before_kb=$(stat -c%s "$path" 2>/dev/null || echo 0)
-            before_kb=$((before_kb / 1024))
+            local file_size=$(stat -c%s "$path" 2>/dev/null || echo 0)
+            if [ -n "$file_size" ] && [ "$file_size" -gt 0 ] 2>/dev/null; then
+                size_kb=$((file_size / 1024))
+                [ "$size_kb" -eq 0 ] && [ "$file_size" -gt 0 ] && size_kb=1
+            fi
         fi
     fi
     
-    echo "$before_kb"
+    echo "$size_kb"
 }
 
 add_cleaned_space() {
     local cleaned_kb=$1
-    [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null && TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
+    if [ -n "$cleaned_kb" ]; then
+        cleaned_kb=$(echo "$cleaned_kb" | sed 's/[^0-9]//g')
+        if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
+            TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
+        fi
+    fi
 }
 
 run_task() {
@@ -204,16 +213,19 @@ clean_rotated_logs() {
     local log_dir="$1"
     local days="$2"
     local cleaned_kb=0
+    
     [ -d "$log_dir" ] || { echo "0"; return 0; }
     
     local before_kb=$(measure_cleanup "$log_dir")
+    before_kb=${before_kb:-0}
     
-    local truncated_size=0
+    local truncated_size_kb=0
     while IFS= read -r -d '' logfile; do
         if [ -f "$logfile" ]; then
             local log_size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
-            if [ "$log_size" -gt 104857600 ]; then
-                truncated_size=$((truncated_size + log_size))
+            if [ -n "$log_size" ] && [ "$log_size" -gt 104857600 ] 2>/dev/null; then
+                local log_size_kb=$((log_size / 1024))
+                truncated_size_kb=$((truncated_size_kb + log_size_kb))
             fi
         fi
     done < <(find "$log_dir" -type f -name "*.log" -size +100M -print0 2>/dev/null)
@@ -222,15 +234,17 @@ clean_rotated_logs() {
     find "$log_dir" -type f -name "*.log" -size +100M -exec truncate -s 0 {} \; 2>/dev/null
     
     local after_kb=$(measure_cleanup "$log_dir")
-    cleaned_kb=$((before_kb - after_kb))
-    [ "$cleaned_kb" -lt 0 ] && cleaned_kb=0
+    after_kb=${after_kb:-0}
     
-    if [ "$truncated_size" -gt 0 ]; then
-        truncated_size=$((truncated_size / 1024))
-        cleaned_kb=$((cleaned_kb + truncated_size))
+    if [ "$before_kb" -gt "$after_kb" ] 2>/dev/null; then
+        cleaned_kb=$((before_kb - after_kb))
     fi
     
-    echo "$cleaned_kb"
+    if [ "$truncated_size_kb" -gt 0 ] 2>/dev/null; then
+        cleaned_kb=$((cleaned_kb + truncated_size_kb))
+    fi
+    
+    echo "${cleaned_kb:-0}"
 }
 
 if command -v mariadb >/dev/null 2>&1; then
@@ -256,27 +270,34 @@ if [ "$CLEAN_JOURNALCTL" = "TRUE" ] || [ "$CLEAN_JOURNALCTL" = "true" ]; then
     echo -n "[$(date)] : Journalctl logs (>${JOURNALCTL_RETENTION_DAYS}d)... "
     journalctl_output=$(journalctl --vacuum-time=${JOURNALCTL_RETENTION_DAYS}d 2>&1)
     if [ $? -eq 0 ]; then
-        freed_space=$(echo "$journalctl_output" | grep -oP 'Freed \K[\d.]+' | head -1)
-        freed_unit=$(echo "$journalctl_output" | grep -oP 'Freed [\d.]+ \K\w+' | head -1)
-        if [ -n "$freed_space" ] && [ -n "$freed_unit" ]; then
-            if [ "$freed_unit" = "MB" ] || [ "$freed_unit" = "M" ]; then
-                if command -v bc >/dev/null 2>&1; then
-                    freed_kb=$(echo "$freed_space * 1024" | bc | cut -d. -f1)
+        freed_line=$(echo "$journalctl_output" | grep -i "freed" | head -1)
+        if [ -n "$freed_line" ]; then
+            freed_space=$(echo "$freed_line" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
+            freed_unit=$(echo "$freed_line" | grep -oE '[KMGT]?B' | head -1 | tr '[:lower:]' '[:upper:]')
+            if [ -n "$freed_space" ] && [ -n "$freed_unit" ]; then
+                if [ "$freed_unit" = "MB" ]; then
+                    if command -v bc >/dev/null 2>&1; then
+                        freed_kb=$(echo "$freed_space * 1024" | bc | cut -d. -f1)
+                    else
+                        freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024}")
+                    fi
+                elif [ "$freed_unit" = "GB" ]; then
+                    if command -v bc >/dev/null 2>&1; then
+                        freed_kb=$(echo "$freed_space * 1024 * 1024" | bc | cut -d. -f1)
+                    else
+                        freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024 * 1024}")
+                    fi
+                elif [ "$freed_unit" = "KB" ] || [ "$freed_unit" = "K" ]; then
+                    freed_kb=$(echo "$freed_space" | cut -d. -f1)
                 else
-                    freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024}")
+                    freed_kb=0
                 fi
-            elif [ "$freed_unit" = "GB" ] || [ "$freed_unit" = "G" ]; then
-                if command -v bc >/dev/null 2>&1; then
-                    freed_kb=$(echo "$freed_space * 1024 * 1024" | bc | cut -d. -f1)
+                if [ -n "$freed_kb" ] && [ "$freed_kb" -gt 0 ] 2>/dev/null; then
+                    add_cleaned_space "$freed_kb"
+                    echo "OK (freed: ${freed_space} ${freed_unit})"
                 else
-                    freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024 * 1024}")
+                    echo "OK"
                 fi
-            else
-                freed_kb=${freed_space}
-            fi
-            if [ -n "$freed_kb" ] && [ "$freed_kb" -gt 0 ] 2>/dev/null; then
-                add_cleaned_space "$freed_kb"
-                echo "OK (freed: ${freed_space} ${freed_unit})"
             else
                 echo "OK"
             fi
