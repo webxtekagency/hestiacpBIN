@@ -1043,11 +1043,11 @@ send_backup_notification() {
 	if [ "$status" = "SUCCESS" ]; then
 		local subject="HestiaCP Backup Summary - $hostname - $timestamp"
 		local status_color="#4CAF50"
-		local status_text="✓ SUCCESS"
+		local status_text="[OK] SUCCESS"
 	else
 		local subject="HestiaCP Backup Summary [ERRORS] - $hostname - $timestamp"
 		local status_color="#F44336"
-		local status_text="✗ CONTAINS ERRORS"
+		local status_text="[FAIL] CONTAINS ERRORS"
 	fi
 	
 	local SENDMAIL="$HESTIA/web/inc/mail-wrapper.php"
@@ -1060,13 +1060,13 @@ send_backup_notification() {
 	
 	local success_list=""
 	for user in "${SUCCESS_USERS[@]}"; do
-		success_list="${success_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#4CAF50; font-weight:bold;\">✓</span> $user</td></tr>"
+		success_list="${success_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#4CAF50; font-weight:bold;\">[OK]</span> $user</td></tr>"
 	done
 	[ -z "$success_list" ] && success_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
 	
 	local failed_list=""
 	for user in "${FAILED_USERS[@]}"; do
-		failed_list="${failed_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#F44336; font-weight:bold;\">✗</span> $user</td></tr>"
+		failed_list="${failed_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#F44336; font-weight:bold;\">[FAIL]</span> $user</td></tr>"
 	done
 	[ -z "$failed_list" ] && failed_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
 	
@@ -1375,12 +1375,12 @@ for user in "${ACTIVE_USERS[@]}"; do
 	
 	if [ $backup_status -eq 0 ] && [ "$backup_found" = true ]; then
 		SUCCESS_USERS+=("$user")
-		echo "[$(date)] : ✓ Backup completed for $user" | tee -a $log | tee -a "$session_log_file"
+		echo "[$(date)] : [OK] Backup completed for $user" | tee -a $log | tee -a "$session_log_file"
 		update_user_backup_list "$user" "$user_backup_dir" "$session_log_file"
 	else
 		FAILED_USERS+=("$user")
 		FINAL_STATUS="CONTAINS ERRORS"
-		echo "[$(date)] : ✗ Backup failed for $user" | tee -a $log | tee -a "$session_log_file"
+		echo "[$(date)] : [FAIL] Backup failed for $user" | tee -a $log | tee -a "$session_log_file"
 	fi
 	
 	rm -f "$user_backup_log_temp" 2>/dev/null
@@ -1444,7 +1444,9 @@ if [ -d "$BACKUP_BASE" ]; then
 		fi
 	done
 	
-	[ "$cleaned_count" -gt 0 ] && echo "[$(date)] : Cleaned up $cleaned_count orphaned file(s)/symlink(s) from /backup" | tee -a $log | tee -a "$session_log_file"
+	if [ "$cleaned_count" -gt 0 ]; then
+		echo "[$(date)] : Cleaned up $cleaned_count orphaned file(s)/symlink(s) from /backup" | tee -a $log | tee -a "$session_log_file"
+	fi
 fi
 
 for user in "${ACTIVE_USERS[@]}"; do
@@ -1456,13 +1458,13 @@ done
 
 summary_file="/tmp/backup_summary_$(date +%Y%m%d_%H%M%S).txt"
 {
-	[ "$FINAL_STATUS" = "SUCCESS" ] && echo "STATUS: ✓ SUCCESS" || echo "STATUS: ✗ CONTAINS ERRORS"
+	[ "$FINAL_STATUS" = "SUCCESS" ] && echo "STATUS: [OK] SUCCESS" || echo "STATUS: [FAIL] CONTAINS ERRORS"
 	echo ""
 	echo "Successful: ${#SUCCESS_USERS[@]}"
-	for user in "${SUCCESS_USERS[@]}"; do echo "  ✓ $user"; done
+	for user in "${SUCCESS_USERS[@]}"; do echo "  [OK] $user"; done
 	echo ""
 	echo "Failed: ${#FAILED_USERS[@]}"
-	for user in "${FAILED_USERS[@]}"; do echo "  ✗ $user"; done
+	for user in "${FAILED_USERS[@]}"; do echo "  [FAIL] $user"; done
 	echo ""
 	echo "Total: $((${#SUCCESS_USERS[@]} + ${#FAILED_USERS[@]}))"
 } > "$summary_file"
