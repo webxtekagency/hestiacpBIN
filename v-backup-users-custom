@@ -1060,15 +1060,15 @@ send_backup_notification() {
 	
 	local success_list=""
 	for user in "${SUCCESS_USERS[@]}"; do
-		success_list="${success_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#4CAF50; font-weight:bold;\">[OK]</span> $user</td></tr>"
+		success_list="${success_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #555;\"><span style=\"color:#4CAF50; font-weight:bold;\">[OK]</span> <span style=\"color:#E0E0E0;\">$user</span></td></tr>"
 	done
-	[ -z "$success_list" ] && success_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
+	[ -z "$success_list" ] && success_list="<tr><td style=\"padding:6px 12px; color:#A0A0A0;\">None</td></tr>"
 	
 	local failed_list=""
 	for user in "${FAILED_USERS[@]}"; do
-		failed_list="${failed_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#F44336; font-weight:bold;\">[FAIL]</span> $user</td></tr>"
+		failed_list="${failed_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #555;\"><span style=\"color:#F44336; font-weight:bold;\">[FAIL]</span> <span style=\"color:#E0E0E0;\">$user</span></td></tr>"
 	done
-	[ -z "$failed_list" ] && failed_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
+	[ -z "$failed_list" ] && failed_list="<tr><td style=\"padding:6px 12px; color:#A0A0A0;\">None</td></tr>"
 	
 	local html_body=$(cat << EOF
 <!DOCTYPE html>
@@ -1077,40 +1077,41 @@ send_backup_notification() {
 <meta charset="UTF-8">
 <title>HestiaCP Backup Summary</title>
 </head>
-<body style="font-family: Arial, sans-serif; background:#f4f4f9; margin:0; padding:20px; color:#333;">
-<div style="max-width:760px; margin:0 auto; background:#fff; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,.1); overflow:hidden;">
-  <div style="background:${status_color}; color:#fff; padding:14px 16px; text-align:center;">
-    <h1 style="margin:0; font-size:20px;">HestiaCP Backup Summary</h1>
+<body style="font-family:Arial,sans-serif; background:#222222; margin:0; padding:20px; color:#E0E0E0;">
+<div style="max-width:760px; margin:0 auto; background:#3A3A3A; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.5); overflow:hidden; border:1px solid #555;">
+  <div style="background:${status_color}; color:#fff; padding:16px; text-align:center; border-bottom:2px solid rgba(255,255,255,.1);">
+    <h1 style="margin:0; font-size:20px; font-weight:bold;">HestiaCP Backup Summary</h1>
+    <p style="margin:4px 0 0 0; font-size:12px; opacity:0.9;">${hostname}</p>
   </div>
-  <div style="padding:18px;">
-    <h3 style="margin:0 0 10px 0; color:#333;">Status</h3>
-    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Status</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:${status_color}; font-weight:bold;">${status_text}</td></tr>
-      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Server</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee;">${hostname}</td></tr>
-      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Date</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee;">${timestamp}</td></tr>
-      <tr><td style="padding:6px 12px;"><b>Directory</b></td><td style="padding:6px 12px;">${backup_path}</td></tr>
+  <div style="padding:20px;">
+    <h3 style="margin:0 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;">Status</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#2C2C2C; border:1px solid #555;">
+      <tr><td style="padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;"><b>Status</b></td><td style="padding:8px 12px; border-bottom:1px solid #555; color:${status_color}; font-weight:bold;">${status_text}</td></tr>
+      <tr><td style="padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;"><b>Server</b></td><td style="padding:8px 12px; border-bottom:1px solid #555; color:#E0E0E0;">${hostname}</td></tr>
+      <tr><td style="padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;"><b>Date</b></td><td style="padding:8px 12px; border-bottom:1px solid #555; color:#E0E0E0;">${timestamp}</td></tr>
+      <tr><td style="padding:8px 12px; color:#A0A0A0;"><b>Directory</b></td><td style="padding:8px 12px; color:#E0E0E0;">${backup_path}</td></tr>
     </table>
     
-    <h3 style="margin:18px 0 10px 0; color:#333;">Summary</h3>
-    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Successful</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:#4CAF50; font-weight:bold;">${success_count}</td></tr>
-      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Failed</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:#F44336; font-weight:bold;">${failed_count}</td></tr>
-      <tr><td style="padding:6px 12px;"><b>Total</b></td><td style="padding:6px 12px; font-weight:bold;">${total_count}</td></tr>
+    <h3 style="margin:20px 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;">Summary</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#2C2C2C; border:1px solid #555;">
+      <tr><td style="padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;"><b>Successful</b></td><td style="padding:8px 12px; border-bottom:1px solid #555; color:#4CAF50; font-weight:bold;">${success_count}</td></tr>
+      <tr><td style="padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;"><b>Failed</b></td><td style="padding:8px 12px; border-bottom:1px solid #555; color:#F44336; font-weight:bold;">${failed_count}</td></tr>
+      <tr><td style="padding:8px 12px; color:#A0A0A0;"><b>Total</b></td><td style="padding:8px 12px; color:#E0E0E0; font-weight:bold;">${total_count}</td></tr>
     </table>
     
-    <h3 style="margin:18px 0 10px 0; color:#333;">Successful Backups</h3>
-    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#f9f9f9;">
+    <h3 style="margin:20px 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;">Successful Backups</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#2C2C2C; border:1px solid #555;">
       ${success_list}
     </table>
     
-    <h3 style="margin:18px 0 10px 0; color:#333;">Failed Backups</h3>
-    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#f9f9f9;">
+    <h3 style="margin:20px 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;">Failed Backups</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#2C2C2C; border:1px solid #555;">
       ${failed_list}
     </table>
     
-    <p style="margin-top:16px; font-size:12px; color:#777;">Full backup log is attached to this email.</p>
+    <p style="margin-top:20px; font-size:12px; color:#A0A0A0;">Full backup log is attached to this email.</p>
   </div>
-  <div style="background:#f4f4f9; padding:10px; text-align:center; font-size:12px; color:#777;">
+  <div style="background:#2C2C2C; padding:12px; text-align:center; font-size:11px; color:#A0A0A0; border-top:1px solid #555;">
     <p style="margin:0;">Automated notification from HestiaCP Backup System</p>
   </div>
 </div>
