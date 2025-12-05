@@ -1,0 +1,1484 @@
+#!/bin/bash
+
+#==========================================
+# CONFIGURATION - Edit these if needed
+#==========================================
+# Leave empty to auto-detect admin user with ROLE='admin'
+# Or set manually: ADMIN_USER_OVERRIDE="adminx078sys"
+ADMIN_USER_OVERRIDE=""
+
+# Leave empty to use the CONTACT email from admin user (recommended)
+# Or set manually to receive notifications on a specific email
+# Example: ADMIN_EMAIL_OVERRIDE="your@email.com"
+# The server sends FROM noreply@hostname, so any destination email works
+ADMIN_EMAIL_OVERRIDE=""
+
+# Keep only 1 backup per user from previous months (TRUE/FALSE)
+# When TRUE: For each user, keeps only the most recent backup from previous months
+# When FALSE: Keeps all backups (default HestiaCP behavior)
+KEEP_ONLY_ONE_OLD_BACKUP="FALSE"
+#==========================================
+
+source /etc/hestiacp/hestia.conf
+source $HESTIA/func/main.sh
+source_conf "$HESTIA/conf/hestia.conf"
+check_hestia_demo_mode
+
+log=$HESTIA/log/backup.log
+SUCCESS_USERS=()
+FAILED_USERS=()
+FINAL_STATUS="SUCCESS"
+
+ADMIN_USER=""
+ADMIN_EMAIL=""
+
+if [ -n "$ADMIN_EMAIL_OVERRIDE" ]; then
+	ADMIN_EMAIL="$ADMIN_EMAIL_OVERRIDE"
+	ADMIN_USER="${ADMIN_USER_OVERRIDE:-custom}"
+elif [ -n "$ADMIN_USER_OVERRIDE" ] && [ -f "$HESTIA/data/users/$ADMIN_USER_OVERRIDE/user.conf" ]; then
+	ADMIN_USER="$ADMIN_USER_OVERRIDE"
+	ADMIN_EMAIL=$(grep "^CONTACT=" "$HESTIA/data/users/$ADMIN_USER/user.conf" 2>/dev/null | cut -d"'" -f2)
+else
+	for user_conf in "$HESTIA/data/users"/*/user.conf; do
+		[ -f "$user_conf" ] || continue
+		if grep -q "ROLE='admin'" "$user_conf" 2>/dev/null; then
+			ADMIN_USER=$(basename "$(dirname "$user_conf")")
+			ADMIN_EMAIL=$(grep "^CONTACT=" "$user_conf" 2>/dev/null | cut -d"'" -f2)
+			break
+		fi
+	done
+fi
+
+if [ -z "$ADMIN_EMAIL" ] && [ -f "$HESTIA/data/users/admin/user.conf" ]; then
+	ADMIN_EMAIL=$(grep "^CONTACT=" "$HESTIA/data/users/admin/user.conf" 2>/dev/null | cut -d"'" -f2)
+	ADMIN_USER="admin"
+fi
+if [ -z "$ADMIN_EMAIL" ]; then
+	ADMIN_EMAIL=$(grep "^CONTACT=" "$HESTIA/conf/hestia.conf" 2>/dev/null | cut -d"'" -f2)
+fi
+
+if [ -z "$BACKUP_SYSTEM" ]; then
+	echo "[$(date)] : Backup system is disabled. Exiting." | tee -a $log
+	exit
+fi
+
+echo "==========================================" | tee -a $log
+echo "HestiaCP Backup Process Started" | tee -a $log
+echo "Date: $(date)" | tee -a $log
+if [ -n "$ADMIN_EMAIL" ]; then
+	echo "Admin user: $ADMIN_USER" | tee -a $log
+	echo "Email notifications: $ADMIN_EMAIL" | tee -a $log
+else
+	echo "Email notifications: DISABLED (no admin CONTACT found)" | tee -a $log
+fi
+echo "==========================================" | tee -a $log
+echo ""
+
+patch_delete_command() {
+	grep -q "hestia-backup-symlink-handler" "$HESTIA/bin/v-delete-user-backup" 2>/dev/null && return 0
+	[ ! -f "$HESTIA/bin/v-delete-user-backup.original" ] && cp "$HESTIA/bin/v-delete-user-backup" "$HESTIA/bin/v-delete-user-backup.original" 2>/dev/null
+	
+	if [ -f "$HESTIA/bin/v-delete-user-backup" ]; then
+		local temp_file=$(mktemp /tmp/v-delete-user-backup-patch.XXXXXX 2>/dev/null || echo "/tmp/v-delete-user-backup-patch.$$")
+		line_num=$(grep -n 'rm -f "$backup_folder/$2"' "$HESTIA/bin/v-delete-user-backup" | cut -d: -f1 | head -1)
+		
+		if [ -n "$line_num" ]; then
+			sed -n "1,$((line_num-1))p" "$HESTIA/bin/v-delete-user-backup" > "$temp_file" 2>/dev/null
+			cat >> "$temp_file" << 'PATCH_EOF'
+		# hestia-backup-symlink-handler
+		backup_file_path="$backup_folder/$2"
+		if [ -L "$backup_file_path" ]; then
+			real_file=$(readlink -f "$backup_file_path" 2>/dev/null)
+			rm -f "$backup_file_path"
+			if [ -n "$real_file" ] && [ -f "$real_file" ]; then
+				rm -f "$real_file" 2>/dev/null
+				log_file="${real_file%.tar}.log"
+				[ -f "$log_file" ] && rm -f "$log_file" 2>/dev/null
+			fi
+		else
+			rm -f "$backup_file_path"
+		fi
+PATCH_EOF
+			sed -n "$((line_num+1)),\$p" "$HESTIA/bin/v-delete-user-backup" >> "$temp_file" 2>/dev/null
+			
+			if [ -s "$temp_file" ] && grep -q "hestia-backup-symlink-handler" "$temp_file" 2>/dev/null; then
+				mv "$temp_file" "$HESTIA/bin/v-delete-user-backup" 2>/dev/null || cp "$temp_file" "$HESTIA/bin/v-delete-user-backup" 2>/dev/null
+				chmod +x "$HESTIA/bin/v-delete-user-backup" 2>/dev/null
+				rm -f "$temp_file" 2>/dev/null
+				echo "[$(date)] : Patched v-delete-user-backup" | tee -a $log
+				return 0
+			fi
+			rm -f "$temp_file" 2>/dev/null
+		fi
+		return 1
+	fi
+	return 1
+}
+
+patch_restore_command() {
+	local restore_script="$HESTIA/bin/v-restore-user"
+	[ ! -f "$restore_script" ] && return 1
+	grep -q "hestia-backup-symlink-restore-handler" "$restore_script" 2>/dev/null && return 0
+	[ ! -f "${restore_script}.original" ] && cp "$restore_script" "${restore_script}.original" 2>/dev/null
+	
+	local temp_file=$(mktemp /tmp/v-restore-user-patch.XXXXXX 2>/dev/null || echo "/tmp/v-restore-user-patch.$$")
+	local line_num=""
+	line_num=$(grep -n 'backup="$BACKUP/' "$restore_script" | head -1 | cut -d: -f1)
+	[ -z "$line_num" ] && line_num=$(grep -n 'BACKUP_FILE=' "$restore_script" | head -1 | cut -d: -f1)
+	[ -z "$line_num" ] && line_num=$(grep -n 'if \[ ! -f.*backup' "$restore_script" | head -1 | cut -d: -f1)
+	
+	if [ -n "$line_num" ]; then
+		sed -n "1,$((line_num-1))p" "$restore_script" > "$temp_file" 2>/dev/null
+		cat >> "$temp_file" << 'RESTORE_PATCH_EOF'
+
+# hestia-backup-symlink-restore-handler
+_resolve_backup_path() {
+    local backup_path="$1"
+    if [ -L "$backup_path" ]; then
+        local real_path=$(readlink -f "$backup_path" 2>/dev/null)
+        [ -n "$real_path" ] && [ -f "$real_path" ] && echo "$real_path" && return 0
+    fi
+    [ -f "$backup_path" ] && echo "$backup_path" && return 0
+    local backup_name=$(basename "$backup_path")
+    local backup_base=$(dirname "$backup_path")
+    local found_backup=""
+    while IFS= read -r -d '' found_file; do
+        [ -f "$found_file" ] && found_backup="$found_file" && break
+    done < <(find "$backup_base" -type f -name "$backup_name" -print0 2>/dev/null)
+    [ -n "$found_backup" ] && echo "$found_backup" && return 0
+    echo "$backup_path"
+    return 1
+}
+
+RESTORE_PATCH_EOF
+		sed -n "${line_num},\$p" "$restore_script" >> "$temp_file" 2>/dev/null
+		sed -i 's/if \[ ! -f "$BACKUP\/$backup" \]/backup_resolved=$(_resolve_backup_path "$BACKUP\/$backup")\nif [ ! -f "$backup_resolved" ]/' "$temp_file" 2>/dev/null
+		sed -i 's/if \[ ! -f "$BACKUP\/$2" \]/backup_resolved=$(_resolve_backup_path "$BACKUP\/$2")\nif [ ! -f "$backup_resolved" ]/' "$temp_file" 2>/dev/null
+		sed -i 's/tar -xf "$BACKUP\/$backup"/tar -xf "$backup_resolved"/' "$temp_file" 2>/dev/null
+		sed -i 's/tar -xzf "$BACKUP\/$backup"/tar -xzf "$backup_resolved"/' "$temp_file" 2>/dev/null
+		sed -i 's/tar -xf "$BACKUP\/$2"/tar -xf "$backup_resolved"/' "$temp_file" 2>/dev/null
+		sed -i 's/tar -xzf "$BACKUP\/$2"/tar -xzf "$backup_resolved"/' "$temp_file" 2>/dev/null
+		
+		if [ -s "$temp_file" ] && grep -q "hestia-backup-symlink-restore-handler" "$temp_file" 2>/dev/null; then
+			mv "$temp_file" "$restore_script" 2>/dev/null || cp "$temp_file" "$restore_script" 2>/dev/null
+			chmod +x "$restore_script" 2>/dev/null
+			rm -f "$temp_file" 2>/dev/null
+			echo "[$(date)] : Patched v-restore-user" | tee -a $log
+			return 0
+		fi
+		rm -f "$temp_file" 2>/dev/null
+	fi
+	
+	local helper_script="$HESTIA/func/backup-symlink-helper.sh"
+	cat > "$helper_script" << 'HELPER_EOF'
+#!/bin/bash
+# hestia-backup-symlink-restore-handler
+resolve_backup_symlink() {
+    local backup_path="$1"
+    if [ -L "$backup_path" ]; then
+        local real_path=$(readlink -f "$backup_path" 2>/dev/null)
+        [ -n "$real_path" ] && [ -f "$real_path" ] && echo "$real_path" && return 0
+    fi
+    [ -f "$backup_path" ] && echo "$backup_path" && return 0
+    local backup_name=$(basename "$backup_path")
+    local backup_base=$(dirname "$backup_path")
+    local found_backup=""
+    while IFS= read -r -d '' found_file; do
+        [ -f "$found_file" ] && found_backup="$found_file" && break
+    done < <(find "$backup_base" -type f -name "$backup_name" -print0 2>/dev/null)
+    [ -n "$found_backup" ] && echo "$found_backup" && return 0
+    echo "$backup_path"
+    return 1
+}
+export -f resolve_backup_symlink 2>/dev/null
+HELPER_EOF
+	chmod +x "$helper_script" 2>/dev/null
+	echo "[$(date)] : Created backup symlink helper" | tee -a $log
+	return 0
+}
+
+patch_list_backup_contents() {
+	local list_script=""
+	for script in "$HESTIA/bin/v-list-backup-contents" "$HESTIA/bin/v-list-user-backup-contents" "$HESTIA/bin/v-list-backup"; do
+		[ -f "$script" ] && list_script="$script" && break
+	done
+	[ -z "$list_script" ] && return 0
+	grep -q "hestia-backup-symlink-list-handler" "$list_script" 2>/dev/null && return 0
+	[ ! -f "${list_script}.original" ] && cp "$list_script" "${list_script}.original" 2>/dev/null
+	
+	local temp_file=$(mktemp /tmp/v-list-backup-patch.XXXXXX 2>/dev/null || echo "/tmp/v-list-backup-patch.$$")
+	cp "$list_script" "$temp_file" 2>/dev/null
+	
+	cat >> "$temp_file" << 'LIST_PATCH_EOF'
+
+# hestia-backup-symlink-list-handler
+_resolve_backup_for_list() {
+    local backup_path="$1"
+    [ -z "$backup_path" ] && return 1
+    if [ -L "$backup_path" ]; then
+        local real_path=$(readlink -f "$backup_path" 2>/dev/null)
+        [ -n "$real_path" ] && [ -f "$real_path" ] && echo "$real_path" && return 0
+    fi
+    [ -f "$backup_path" ] && echo "$backup_path" && return 0
+    local backup_name=$(basename "$backup_path")
+    local backup_base=$(dirname "$backup_path")
+    local found_backup=""
+    while IFS= read -r -d '' found_file; do
+        [ -f "$found_file" ] && found_backup="$found_file" && break
+    done < <(find "$backup_base" -type f -name "$backup_name" -print0 2>/dev/null)
+    [ -n "$found_backup" ] && echo "$found_backup" && return 0
+    echo "$backup_path"
+    return 1
+}
+
+LIST_PATCH_EOF
+	
+	sed -i 's|tar -tf "$BACKUP/\([^"]*\)"|backup_file_resolved=$(_resolve_backup_for_list "$BACKUP/\1")\ntar -tf "$backup_file_resolved"|g' "$temp_file" 2>/dev/null
+	sed -i 's|tar -tzf "$BACKUP/\([^"]*\)"|backup_file_resolved=$(_resolve_backup_for_list "$BACKUP/\1")\ntar -tzf "$backup_file_resolved"|g' "$temp_file" 2>/dev/null
+	sed -i 's|tar -tf "$backup_folder/\([^"]*\)"|backup_file_resolved=$(_resolve_backup_for_list "$backup_folder/\1")\ntar -tf "$backup_file_resolved"|g' "$temp_file" 2>/dev/null
+	sed -i 's|tar -tzf "$backup_folder/\([^"]*\)"|backup_file_resolved=$(_resolve_backup_for_list "$backup_folder/\1")\ntar -tzf "$backup_file_resolved"|g' "$temp_file" 2>/dev/null
+	sed -i 's|\$BACKUP/\$backup|\$BACKUP/\$backup)\nbackup_file_resolved=$(_resolve_backup_for_list "$backup_file_resolved"|g' "$temp_file" 2>/dev/null
+	
+	if [ -s "$temp_file" ] && grep -q "hestia-backup-symlink-list-handler" "$temp_file" 2>/dev/null; then
+		mv "$temp_file" "$list_script" 2>/dev/null || cp "$temp_file" "$list_script" 2>/dev/null
+		chmod +x "$list_script" 2>/dev/null
+		rm -f "$temp_file" 2>/dev/null
+		echo "[$(date)] : Patched backup list command: $(basename $list_script)" | tee -a $log
+		return 0
+	fi
+	rm -f "$temp_file" 2>/dev/null
+	return 0
+}
+
+backup_user_internal() {
+	local user="$1"
+	local user_backup_dir="$2"
+	local session_log_file="$3"
+	local user_backup_log_temp="$4"
+	
+	[ -z "$user" ] || [ -z "$user_backup_dir" ] && return 1
+	
+	nice -n 19 >/dev/null 2>&1
+	command -v ionice >/dev/null 2>&1 && ionice -c2 -n7 -p $$ >/dev/null 2>&1
+	
+	source $HESTIA/func/domain.sh
+	source $HESTIA/func/db.sh
+	source $HESTIA/func/backup.sh
+	
+	local USER_DATA="$HESTIA/data/users/$user"
+	local HOMEDIR=$(grep "^HOME=" "$HESTIA/conf/hestia.conf" | cut -f 2 -d \')
+	[ -z "$HOMEDIR" ] && HOMEDIR="/home"
+	
+	local BACKUPS=$(grep "^BACKUPS=" "$USER_DATA/user.conf" 2>/dev/null | cut -f2 -d \')
+	[ -z "$BACKUPS" ] && BACKUPS="3"
+	
+	local original_backup="$BACKUP"
+	[ -z "$BACKUP" ] && BACKUP="/backup"
+	[ -z "$BACKUP_BASE" ] && BACKUP_BASE="$BACKUP"
+	
+	[ ! -d "$BACKUP" ] && mkdir -p "$BACKUP"
+	[ "$(stat -c %a "$BACKUP" 2>/dev/null)" != "755" ] && chmod 755 "$BACKUP" 2>/dev/null
+	
+	local start_time=$(date '+%s')
+	local tmpdir=$(mktemp -p "$BACKUP_BASE" -d 2>/dev/null || mktemp -d)
+	[ "$?" -ne 0 ] && return 1
+	
+	trap "rm -rf '$tmpdir' 2>/dev/null; exit" INT TERM EXIT
+	
+	local log_cmd="tee -a $log"
+	[ -n "$session_log_file" ] && log_cmd="$log_cmd | tee -a \"$session_log_file\""
+	[ -n "$user_backup_log_temp" ] && log_cmd="$log_cmd | tee -a \"$user_backup_log_temp\""
+	
+	echo "-- SYSTEM --" | eval $log_cmd
+	mkdir -p "$tmpdir/hestia"
+	echo -e "$(date "+%F %T") user.conf" | eval $log_cmd
+	cp -r "$USER_DATA/user.conf" "$tmpdir/hestia/" 2>/dev/null
+	cp -r "$USER_DATA/ssl" "$tmpdir/hestia/" 2>/dev/null 2>&1
+	
+	[ -e "$USER_DATA/stats.log" ] && cp -r "$USER_DATA/stats.log" "$tmpdir/hestia/" 2>/dev/null
+	[ -e "$USER_DATA/history.log" ] && cp -r "$USER_DATA/history.log" "$tmpdir/hestia/" 2>/dev/null
+	[ -e "$USER_DATA/backup-excludes.conf" ] && cp -r "$USER_DATA/backup-excludes.conf" "$tmpdir/hestia/" 2>/dev/null
+	
+	mkdir -p "$tmpdir/pam"
+	echo -e "$(date "+%F %T") pam" | eval $log_cmd
+	grep "^$user:" /etc/passwd > "$tmpdir/pam/passwd" 2>/dev/null
+	grep "^$user:" /etc/shadow > "$tmpdir/pam/shadow" 2>/dev/null
+	grep "^$user:" /etc/group > "$tmpdir/pam/group" 2>/dev/null
+	
+	local WEB="" DNS="" MAIL="" DB="" CRON="" USER=""
+	[ -e "$USER_DATA/backup-excludes.conf" ] && source "$USER_DATA/backup-excludes.conf"
+	
+	local web_list="" dns_list="" mail_list="" db_list="" cron_list="" udir_list=""
+	
+	if [ -n "$WEB_SYSTEM" ] && [ "$WEB" != '*' ]; then
+		echo -e "\n-- WEB --" | eval $log_cmd
+		mkdir -p "$tmpdir/web/"
+		for domain in $(search_objects 'web' 'SUSPENDED' "*" 'DOMAIN'); do
+			local exclusion=$(echo -e "$WEB" | tr ',' '\n' | grep "^$domain$\|^\*$")
+			[ -z "$exclusion" ] && web_list="$web_list $domain"
+		done
+		web_list=$(echo "$web_list" | sed -e "s/  */\ /g" -e "s/^ //")
+		
+		local i=0
+		for domain in $web_list; do
+			((i++))
+			echo -e "$(date "+%F %T") $domain" | eval $log_cmd
+			mkdir -p "$tmpdir/web/$domain/conf" "$tmpdir/web/$domain/hestia"
+			
+			cd "$tmpdir/web/$domain/"
+			grep "DOMAIN='$domain'" "$USER_DATA/web.conf" > "hestia/web.conf" 2>/dev/null
+			
+			if [ -e "$HOMEDIR/$user/conf/web/$domain/$WEB_SYSTEM.conf" ]; then
+				cp "$HOMEDIR/$user/conf/web/$domain/$WEB_SYSTEM.conf"* conf/ 2>/dev/null
+			fi
+			
+			cd "$HOMEDIR/$user/web/$domain" 2>/dev/null || continue
+			local fargs=(--exclude='./logs/*')
+			
+			local exclusion=$(echo -e "$WEB" | tr ',' '\n' | grep "^$domain\|\*:")
+			if [ -n "$exclusion" ]; then
+				[[ "$exclusion" =~ '*' ]] && exclusion="${exclusion/\*/$domain}"
+				local xdirs=$(echo -e "$exclusion" | tr ':' '\n' | grep -v "$domain")
+				for xpath in $xdirs; do
+					[ -d "$xpath" ] && fargs+=(--exclude="$xpath/*") || fargs+=(--exclude="$xpath")
+				done
+			fi
+			
+			if [ "$BACKUP_MODE" = 'zstd' ]; then
+				tar "${fargs[@]}" -cpf- . 2>/dev/null | pzstd -"$BACKUP_GZIP" - > "$tmpdir/web/$domain/domain_data.tar.zst" 2>/dev/null
+			else
+				tar "${fargs[@]}" -cpf- . 2>/dev/null | gzip -"$BACKUP_GZIP" - > "$tmpdir/web/$domain/domain_data.tar.gz" 2>/dev/null
+			fi
+		done
+		[ "$i" -gt 0 ] && echo -e "$(date "+%F %T") *** $i domain(s) ***" | eval $log_cmd
+	fi
+	
+	if [ -n "$DNS_SYSTEM" ] && [ "$DNS" != '*' ]; then
+		echo -e "\n-- DNS --" | eval $log_cmd
+		mkdir -p "$tmpdir/dns/"
+		for domain in $(search_objects 'dns' 'SUSPENDED' "*" 'DOMAIN'); do
+			local exclusion=$(echo "$DNS" | tr ',' '\n' | grep "^$domain$")
+			[ -z "$exclusion" ] && dns_list="$dns_list $domain"
+		done
+		dns_list=$(echo "$dns_list" | sed -e "s/  */\ /g" -e "s/^ //")
+		
+		local i=0
+		for domain in $dns_list; do
+			((i++))
+			echo -e "$(date "+%F %T") $domain" | eval $log_cmd
+			mkdir -p "$tmpdir/dns/$domain/conf" "$tmpdir/dns/$domain/hestia"
+			
+			cd "$tmpdir/dns/$domain/"
+			grep "DOMAIN='$domain'" "$USER_DATA/dns.conf" > "hestia/dns.conf" 2>/dev/null
+			cp "$USER_DATA/dns/$domain.conf" "hestia/$domain.conf" 2>/dev/null
+			
+			if [ "$DNS_SYSTEM" != 'remote' ]; then
+				cp "$HOMEDIR/$user/conf/dns/$domain.db" conf/ 2>/dev/null
+			fi
+		done
+		[ "$i" -gt 0 ] && echo -e "$(date "+%F %T") *** $i domain(s) ***" | eval $log_cmd
+	fi
+	
+	if [ -n "$MAIL_SYSTEM" ] && [ "$MAIL" != '*' ]; then
+		echo -e "\n-- MAIL --" | eval $log_cmd
+		mkdir -p "$tmpdir/mail/"
+		for domain in $(search_objects 'mail' 'SUSPENDED' "*" 'DOMAIN'); do
+			local check_exl=$(echo "$MAIL" | tr ',' '\n' | grep "^$domain$")
+			[ -z "$check_exl" ] && mail_list="$mail_list $domain"
+		done
+		mail_list=$(echo "$mail_list" | sed -e "s/  */\ /g" -e "s/^ //")
+		
+		local i=0
+		for domain in $mail_list; do
+			((i++))
+			echo -e "$(date "+%F %T") $domain" | eval $log_cmd
+			mkdir -p "$tmpdir/mail/$domain/conf" "$tmpdir/mail/$domain/hestia"
+			
+			local domain_idn=$domain
+			format_domain_idn
+			
+			if [[ "$MAIL_SYSTEM" =~ exim ]]; then
+				cd "$tmpdir/mail/$domain/"
+				cp -r "$HOMEDIR/$user/conf/mail/$domain/"* conf/ 2>/dev/null
+			fi
+			
+			grep "DOMAIN='$domain'" "$USER_DATA/mail.conf" > "hestia/mail.conf" 2>/dev/null
+			cp "$USER_DATA/mail/$domain."* hestia/ 2>/dev/null
+			
+			if [ -d "$USER_DATA/mail" ]; then
+				for mail_file in "$USER_DATA/mail/"*"@$domain"*; do
+					[ -f "$mail_file" ] && cp "$mail_file" hestia/ 2>/dev/null
+				done
+			fi
+			
+			cd "$HOMEDIR/$user/mail/$domain_idn" 2>/dev/null || continue
+			local accounts=()
+			for account in *; do
+				[ ! -d "$account" ] && continue
+				local exclusion=$(echo "$MAIL" | tr ',' '\n' | grep "$domain:")
+				exclusion=$(echo "$exclusion" | tr ':' '\n' | grep -E "^$account$|\*")
+				[ -z "$exclusion" ] && [[ "$MAIL_SYSTEM" =~ exim ]] && accounts+=("$account")
+			done
+			
+			if [ ${#accounts[@]} -gt 0 ]; then
+				if [ "$BACKUP_MODE" = 'zstd' ]; then
+					tar -cpf- "${accounts[@]}" 2>/dev/null | pzstd -"$BACKUP_GZIP" - > "$tmpdir/mail/$domain/accounts.tar.zst" 2>/dev/null
+				else
+					tar -cpf- "${accounts[@]}" 2>/dev/null | gzip -"$BACKUP_GZIP" - > "$tmpdir/mail/$domain/accounts.tar.gz" 2>/dev/null
+				fi
+			fi
+		done
+		[ "$i" -gt 0 ] && echo -e "$(date "+%F %T") *** $i domain(s) ***" | eval $log_cmd
+	fi
+	
+	if [ -n "$DB_SYSTEM" ] && [ "$DB" != '*' ]; then
+		echo -e "\n-- DB --" | eval $log_cmd
+		mkdir -p "$tmpdir/db/"
+		for database in $(search_objects 'db' 'SUSPENDED' "*" 'DB'); do
+			local exclusion=$(echo "$DB" | tr ',' '\n' | grep "^$database$")
+			[ -z "$exclusion" ] && db_list="$db_list $database"
+		done
+		db_list=$(echo "$db_list" | sed -e "s/  */\ /g" -e "s/^ //")
+		
+		local i=0
+		for database in $db_list; do
+			((i++))
+			get_database_values
+			echo -e "$(date "+%F %T") $database ($TYPE)" | eval $log_cmd
+			mkdir -p "$tmpdir/db/$database/conf" "$tmpdir/db/$database/hestia"
+			
+			cd "$tmpdir/db/$database/"
+			grep "DB='$database'" "$USER_DATA/db.conf" > "hestia/db.conf" 2>/dev/null
+			
+			local dump="$tmpdir/db/$database/$database.$TYPE.sql"
+			if [ "$BACKUP_MODE" = 'zstd' ]; then
+				local dumpgz="$tmpdir/db/$database/$database.$TYPE.sql.zst"
+			else
+				local dumpgz="$tmpdir/db/$database/$database.$TYPE.sql.gz"
+			fi
+			
+			local grants="$tmpdir/db/$database/conf/$database.$TYPE.$DBUSER"
+			export grants dump dumpgz
+			
+			if [ ! -f "$dumpgz" ]; then
+				case $TYPE in
+					mysql) dump_mysql_database ;;
+					pgsql) dump_pgsql_database ;;
+				esac
+				
+				if [ "$BACKUP_MODE" = 'zstd' ]; then
+					pzstd -$BACKUP_GZIP "$dump" 2>/dev/null && rm "$dump" 2>/dev/null
+				else
+					gzip -$BACKUP_GZIP "$dump" 2>/dev/null
+				fi
+			fi
+		done
+		[ "$i" -gt 0 ] && echo -e "$(date "+%F %T") *** $i database(s) ***" | eval $log_cmd
+	fi
+	
+	if [ -n "$CRON_SYSTEM" ] && [ "$CRON" != '*' ]; then
+		echo -e "\n-- CRON --" | eval $log_cmd
+		mkdir -p "$tmpdir/cron/"
+		cp "$USER_DATA/cron.conf" "$tmpdir/cron/" 2>/dev/null
+		[ -e "/var/spool/cron/$user" ] && cp "/var/spool/cron/$user" "$tmpdir/cron/" 2>/dev/null
+		cron_list="records"
+	fi
+	
+	if [ "$USER" != '*' ]; then
+		echo -e "\n-- USER DIRECTORIES --" | eval $log_cmd
+		mkdir -p "$tmpdir/user_dir"
+		cd "$HOMEDIR/$user" 2>/dev/null || cd "$HOMEDIR/$user"
+		
+		local fargs=()
+		for xpath in $(echo "$USER" | tr ',' '\n'); do
+			[ -d "$xpath" ] && fargs+=(--exclude="$xpath/*") || fargs+=(--exclude="$xpath")
+		done
+		
+		local i=0
+		for udir in $(ls -a 2>/dev/null | grep -vE "^conf$|^web$|^dns$|^tmp$|^mail$|^\.\.$|^\.$"); do
+			[ ! -e "$udir" ] && continue
+			local exclusion=$(echo "$USER" | tr ',' '\n' | grep "^$udir$")
+			if [ -z "$exclusion" ]; then
+				((i++))
+				udir_list="$udir_list $udir"
+				echo -e "$(date "+%F %T") adding $udir" | eval $log_cmd
+				
+				if [ "$BACKUP_MODE" = 'zstd' ]; then
+					tar --anchored -cpf- "${fargs[@]}" "$udir" 2>/dev/null | pzstd -"$BACKUP_GZIP" - > "$tmpdir/user_dir/$udir.tar.zst" 2>/dev/null
+				else
+					tar --anchored -cpf- "${fargs[@]}" "$udir" 2>/dev/null | gzip -"$BACKUP_GZIP" - > "$tmpdir/user_dir/$udir.tar.gz" 2>/dev/null
+				fi
+			fi
+		done
+		udir_list=$(echo "$udir_list" | sed -e "s/  */\ /g" -e "s/^ //")
+		[ "$i" -gt 0 ] && echo -e "$(date "+%F %T") *** $i directory(ies) ***" | eval $log_cmd
+	fi
+	
+	[ "$BACKUP_MODE" = 'zstd' ] && touch "$tmpdir/.zstd"
+	
+	local size=$(du -shm "$tmpdir" 2>/dev/null | cut -f 1)
+	local end_time=$(date '+%s')
+	local time_n_date=$(date +'%T %F')
+	local time=$(echo "$time_n_date" | cut -f 1 -d \ )
+	local date=$(echo "$time_n_date" | cut -f 2 -d \ )
+	local backup_new_date=$(date +"%Y-%m-%d_%H-%M-%S")
+	
+	echo -e "\n-- SUMMARY --" | eval $log_cmd
+	local errorcode="0"
+	
+	local backup_name="$user.$backup_new_date.tar"
+	export backup_name tmpdir user BACKUPS BACKUP
+	
+	for backup_type in $(echo -e "${BACKUP_SYSTEM//,/\\n}"); do
+		case $backup_type in
+			local) local_backup ;;
+			ftp) ftp_backup ;;
+			sftp) sftp_backup ;;
+			b2) b2_backup ;;
+			rclone) rclone_backup ;;
+		esac
+	done
+	
+	if [ "$errorcode" != "0" ]; then
+		if [[ "$BACKUP_SYSTEM" =~ "local" ]]; then
+			echo -e "$(date "+%F %T") *** Local backup was successfully executed. Remote backup failed ***" | eval $log_cmd
+			BACKUP_SYSTEM="local"
+		else
+			echo -e "$(date "+%F %T") *** Remote backup failed ***" | eval $log_cmd
+			trap - INT TERM EXIT
+			rm -rf "$tmpdir" 2>/dev/null
+			BACKUP="$original_backup"
+			return 1
+		fi
+	fi
+	
+	local run_time=$((end_time - start_time))
+	run_time=$((run_time / 60))
+	[ "$run_time" -lt 1 ] && run_time=1
+	
+	echo "$(date "+%F %T") Size: $size MB" | eval $log_cmd
+	echo "$(date "+%F %T") Runtime: $run_time minute(s)" | eval $log_cmd
+	
+	touch "$USER_DATA/backup.conf"
+	sed -i "/$user.$backup_new_date.tar/d" "$USER_DATA/backup.conf"
+	
+	local backup_str="BACKUP='$user.$backup_new_date.tar'"
+	backup_str="$backup_str TYPE='$BACKUP_SYSTEM' SIZE='$size'"
+	backup_str="$backup_str WEB='${web_list// /,}'"
+	backup_str="$backup_str DNS='${dns_list// /,}'"
+	backup_str="$backup_str MAIL='${mail_list// /,}'"
+	backup_str="$backup_str DB='${db_list// /,}'"
+	backup_str="$backup_str CRON='$cron_list'"
+	backup_str="$backup_str UDIR='${udir_list// /,}'"
+	backup_str="$backup_str RUNTIME='$run_time' TIME='$time' DATE='$date'"
+	echo "$backup_str" >> "$USER_DATA/backup.conf"
+	
+	tail -n "$BACKUPS" "$USER_DATA/backup.conf" > "$USER_DATA/backup.conf_" 2>/dev/null
+	mv -f "$USER_DATA/backup.conf_" "$USER_DATA/backup.conf" 2>/dev/null
+	chmod 660 "$USER_DATA/backup.conf" 2>/dev/null
+	
+	local backup_file=""
+	for backup_location in "$BACKUP" "$BACKUP_BASE" "/backup"; do
+		backup_file="$backup_location/$user.$backup_new_date.tar"
+		[ -f "$backup_file" ] && break
+		backup_file=""
+	done
+	
+	if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+		mv "$backup_file" "$user_backup_dir/" 2>/dev/null
+		local final_backup_file="$user_backup_dir/$user.$backup_new_date.tar"
+		if [ -f "$final_backup_file" ]; then
+			echo "$(date "+%F %T") Backup file moved to: $final_backup_file" | eval $log_cmd
+			if [ "$user_backup_dir" != "$BACKUP" ] && [ "$user_backup_dir" != "$BACKUP_BASE" ] && [ -d "$BACKUP_BASE" ]; then
+				local symlink_path="$BACKUP_BASE/$user.$backup_new_date.tar"
+				[ -L "$symlink_path" ] && rm -f "$symlink_path" 2>/dev/null
+				ln -sf "$final_backup_file" "$symlink_path" 2>/dev/null
+				chmod 644 "$symlink_path" 2>/dev/null
+			fi
+		fi
+	fi
+	
+	local U_BACKUPS=$(grep -c "^BACKUP=" "$USER_DATA/backup.conf" 2>/dev/null || echo "0")
+	
+	local user_conf="$USER_DATA/user.conf"
+	if [ -f "$user_conf" ]; then
+		if grep -q "^U_BACKUPS=" "$user_conf" 2>/dev/null; then
+			sed -i "s/^U_BACKUPS=.*/U_BACKUPS='$U_BACKUPS'/" "$user_conf"
+		else
+			echo "U_BACKUPS='$U_BACKUPS'" >> "$user_conf"
+		fi
+	fi
+	
+	trap - INT TERM EXIT
+	rm -rf "$tmpdir" 2>/dev/null
+	BACKUP="$original_backup"
+	return 0
+}
+
+cleanup_deleted_backups() {
+	local user="$1"
+	local user_backup_dir="$2"
+	local default_backup_dir="$3"
+	local session_log_file="$4"
+	[ -z "$user" ] || [ -z "$user_backup_dir" ] || [ -z "$default_backup_dir" ] && return 1
+	local deleted_count=0
+	local checked_count=0
+	local current_time=$(date +%s)
+	
+	if [ -d "$user_backup_dir" ]; then
+		local user_backup_conf="$HESTIA/data/users/$user/backup.conf"
+		while IFS= read -r -d '' backup_file; do
+			if [ -f "$backup_file" ] && [[ "$backup_file" =~ \.tar$ ]]; then
+				checked_count=$((checked_count + 1))
+				backup_name=$(basename "$backup_file")
+				symlink_path="$default_backup_dir/$backup_name"
+				backup_in_conf=$(grep "BACKUP='$backup_name'" "$user_backup_conf" 2>/dev/null)
+				
+				local file_mtime=$(stat -c %Y "$backup_file" 2>/dev/null || echo 0)
+				local file_age=$((current_time - file_mtime))
+				
+				if [ -n "$file_age" ] && [ "$file_age" -lt 600 ] 2>/dev/null; then
+					if [ -n "$session_log_file" ]; then
+						echo "[$(date)] :   Backup $backup_name - recently created (${file_age}s ago), keeping" | tee -a $log | tee -a "$session_log_file"
+					else
+						echo "[$(date)] :   Backup $backup_name - recently created (${file_age}s ago), keeping" | tee -a $log
+					fi
+				elif [ -L "$symlink_path" ] || [ -f "$symlink_path" ]; then
+					if [ -n "$session_log_file" ]; then
+						echo "[$(date)] :   Backup $backup_name - has symlink/reference, keeping" | tee -a $log | tee -a "$session_log_file"
+					else
+						echo "[$(date)] :   Backup $backup_name - has symlink/reference, keeping" | tee -a $log
+					fi
+				elif [ -n "$backup_in_conf" ]; then
+					if [ -n "$session_log_file" ]; then
+						echo "[$(date)] :   Backup $backup_name - found in config, keeping" | tee -a $log | tee -a "$session_log_file"
+					else
+						echo "[$(date)] :   Backup $backup_name - found in config, keeping" | tee -a $log
+					fi
+				else
+					if [ -n "$session_log_file" ]; then
+						echo "[$(date)] :   Backup $backup_name - no symlink, not in config, removing (orphaned)" | tee -a $log | tee -a "$session_log_file"
+					else
+						echo "[$(date)] :   Backup $backup_name - no symlink, not in config, removing (orphaned)" | tee -a $log
+					fi
+					rm -f "$backup_file" 2>/dev/null
+					log_file="${backup_file%.tar}.log"
+					[ -f "$log_file" ] && rm -f "$log_file" 2>/dev/null
+					log_file_in_dir="$user_backup_dir/${backup_name%.tar}.log"
+					[ -f "$log_file_in_dir" ] && rm -f "$log_file_in_dir" 2>/dev/null
+					deleted_count=$((deleted_count + 1))
+				fi
+			fi
+		done < <(find "$user_backup_dir" -maxdepth 1 -type f -name "${user}.*.tar" -print0 2>/dev/null)
+	fi
+	
+	if [ "$checked_count" -gt 0 ]; then
+		if [ "$deleted_count" -gt 0 ]; then
+			if [ -n "$session_log_file" ]; then
+				echo "[$(date)] : Cleaned up $deleted_count orphaned backup(s) for user $user (checked $checked_count total)" | tee -a $log | tee -a "$session_log_file"
+			else
+				echo "[$(date)] : Cleaned up $deleted_count orphaned backup(s) for user $user (checked $checked_count total)" | tee -a $log
+			fi
+		else
+			if [ -n "$session_log_file" ]; then
+				echo "[$(date)] : No orphaned backups found for user $user (checked $checked_count backup(s))" | tee -a $log | tee -a "$session_log_file"
+			else
+				echo "[$(date)] : No orphaned backups found for user $user (checked $checked_count backup(s))" | tee -a $log
+			fi
+		fi
+	fi
+	return 0
+}
+
+extract_backup_metadata() {
+	local backup_file="$1"
+	[ ! -f "$backup_file" ] && return 1
+	
+	local web_list="" dns_list="" mail_list="" db_list="" cron_list="" udir_list=""
+	
+	tar_contents=$(tar -tf "$backup_file" 2>/dev/null)
+	
+	web_list=$(echo "$tar_contents" | grep "^\./web/" | sed 's|^\./web/||' | cut -d'/' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
+	dns_list=$(echo "$tar_contents" | grep "^\./dns/" | sed 's|^\./dns/||' | cut -d'/' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
+	mail_list=$(echo "$tar_contents" | grep "^\./mail/" | sed 's|^\./mail/||' | cut -d'/' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
+	db_list=$(echo "$tar_contents" | grep "^\./db/" | sed 's|^\./db/||' | cut -d'/' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
+	cron_list=$(echo "$tar_contents" | grep -q "^\./cron/" && echo "records" || echo "")
+	udir_list=$(echo "$tar_contents" | grep "^\./user/" | sed 's|^\./user/||' | head -1 | cut -d'/' -f1 | sed 's/^$/home/' | head -1)
+	
+	echo "WEB='$web_list' DNS='$dns_list' MAIL='$mail_list' DB='$db_list' CRON='$cron_list' UDIR='$udir_list'"
+}
+
+update_user_backup_list() {
+	local user="$1"
+	local user_backup_dir="$2"
+	local session_log_file="$3"
+	[ -z "$user" ] || [ -z "$user_backup_dir" ] || [ ! -d "$user_backup_dir" ] && return 1
+	
+	local default_backup_dir="/backup"
+	[ -n "$BACKUP_BASE" ] && default_backup_dir="$BACKUP_BASE"
+	[ -n "$BACKUP" ] && default_backup_dir="$BACKUP"
+	cleanup_deleted_backups "$user" "$user_backup_dir" "$default_backup_dir" "$session_log_file"
+	
+	local backup_files=""
+	while IFS= read -r -d '' backup_file; do
+		if [ -f "$backup_file" ] && [[ "$backup_file" =~ \.tar$ ]]; then
+			[ -z "$backup_files" ] && backup_files="$backup_file" || backup_files="$backup_files"$'\n'"$backup_file"
+		fi
+	done < <(find "$user_backup_dir" -maxdepth 1 -type f -name "*.tar" -print0 2>/dev/null)
+	[ -n "$backup_files" ] && backup_files=$(echo "$backup_files" | sort)
+	
+	local backup_count=0
+	if [ -n "$backup_files" ]; then
+		while IFS= read -r backup_file; do
+			[ -n "$backup_file" ] && [ -f "$backup_file" ] && [[ "$backup_file" =~ \.tar$ ]] && backup_count=$((backup_count + 1))
+		done <<< "$backup_files"
+	fi
+	
+	if [ "$user_backup_dir" != "$default_backup_dir" ] && [ -d "$default_backup_dir" ]; then
+		if [ -n "$backup_files" ]; then
+			while IFS= read -r backup_file; do
+				if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+					backup_name=$(basename "$backup_file")
+					symlink_path="$default_backup_dir/$backup_name"
+					if [ -L "$symlink_path" ]; then
+						old_target=$(readlink -f "$symlink_path" 2>/dev/null)
+						current_target=$(readlink -f "$backup_file" 2>/dev/null)
+						if [ "$old_target" != "$current_target" ] || [ ! -f "$old_target" ]; then
+							rm -f "$symlink_path" 2>/dev/null
+							ln -sf "$backup_file" "$symlink_path" 2>/dev/null
+						fi
+					else
+						ln -sf "$backup_file" "$symlink_path" 2>/dev/null
+					fi
+					chmod 644 "$symlink_path" 2>/dev/null
+					chmod 644 "$backup_file" 2>/dev/null
+				fi
+			done <<< "$backup_files"
+		fi
+		
+		while IFS= read -r -d '' symlink; do
+			if [ -n "$symlink" ] && [ -L "$symlink" ]; then
+				target=$(readlink -f "$symlink" 2>/dev/null)
+				if [ -z "$target" ] || [ ! -f "$target" ]; then
+					rm -f "$symlink" 2>/dev/null
+				fi
+			fi
+		done < <(find "$default_backup_dir" -maxdepth 1 -type l -name "${user}.*.tar" -print0 2>/dev/null)
+	fi
+	
+	local user_backup_conf="$HESTIA/data/users/$user/backup.conf"
+	if [ "$backup_count" -gt 0 ]; then
+		local temp_backup_conf=$(mktemp /tmp/backup_conf_${user}_XXXXXX.conf 2>/dev/null || echo "/tmp/backup_conf_${user}_$$.conf")
+		: > "$temp_backup_conf"
+		
+		processed_backups=""
+		while IFS= read -r backup_file; do
+			if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+				backup_name=$(basename "$backup_file")
+				symlink_path="$default_backup_dir/$backup_name"
+				if [ -L "$symlink_path" ]; then
+					symlink_target=$(readlink -f "$symlink_path" 2>/dev/null)
+					if [ -n "$symlink_target" ] && [ -f "$symlink_target" ] && [ -r "$symlink_target" ]; then
+						existing_line=$(grep "BACKUP='$backup_name'" "$user_backup_conf" 2>/dev/null | head -1)
+						
+						if [ -n "$existing_line" ]; then
+							if echo "$existing_line" | grep -q "WEB=''\|DNS=''\|MAIL=''\|DB=''"; then
+								backup_meta=$(extract_backup_metadata "$backup_file")
+								backup_size=$(stat -c%s "$backup_file" 2>/dev/null || echo "0")
+								backup_size_mb=$(awk "BEGIN {printf \"%.2f\", $backup_size/1048576}")
+								backup_date=$(stat -c%Y "$backup_file" 2>/dev/null || date +%s)
+								backup_time=$(date -d "@$backup_date" +"%H:%M:%S" 2>/dev/null || date +"%H:%M:%S")
+								backup_date_formatted=$(date -d "@$backup_date" +"%d %b %Y" 2>/dev/null || date +"%d %b %Y")
+								echo "BACKUP='$backup_name' TYPE='$BACKUP_SYSTEM' SIZE='$backup_size_mb' $backup_meta RUNTIME='0' TIME='$backup_time' DATE='$backup_date_formatted'" >> "$temp_backup_conf"
+							else
+								echo "$existing_line" >> "$temp_backup_conf"
+							fi
+							processed_backups="$processed_backups|$backup_name"
+						fi
+					fi
+				fi
+			fi
+		done <<< "$backup_files"
+		
+		if [ -f "$user_backup_conf" ]; then
+			while IFS= read -r line; do
+				if [ -n "$line" ] && [[ "$line" =~ ^BACKUP= ]]; then
+					backup_in_line=$(echo "$line" | grep -o "BACKUP='[^']*'" | cut -d"'" -f2)
+					if [ -n "$backup_in_line" ]; then
+						if echo "$processed_backups" | grep -q "|$backup_in_line"; then
+							continue
+						fi
+						backup_file_path="$default_backup_dir/$backup_in_line"
+						backup_found_in_organized=$(find "$user_backup_dir" -name "$backup_in_line" -type f 2>/dev/null | head -1)
+						
+						if [ -f "$backup_file_path" ] || [ -L "$backup_file_path" ]; then
+							echo "$line" >> "$temp_backup_conf"
+						elif [ -n "$backup_found_in_organized" ] && [ -f "$backup_found_in_organized" ]; then
+							if [ ! -L "$backup_file_path" ]; then
+								ln -sf "$backup_found_in_organized" "$backup_file_path" 2>/dev/null
+								chmod 644 "$backup_file_path" 2>/dev/null
+							fi
+							if echo "$line" | grep -q "WEB=''\|DNS=''\|MAIL=''\|DB=''"; then
+								backup_meta=$(extract_backup_metadata "$backup_found_in_organized")
+								backup_size=$(stat -c%s "$backup_found_in_organized" 2>/dev/null || echo "0")
+								backup_size_mb=$(awk "BEGIN {printf \"%.2f\", $backup_size/1048576}")
+								backup_date=$(stat -c%Y "$backup_found_in_organized" 2>/dev/null || date +%s)
+								backup_time=$(date -d "@$backup_date" +"%H:%M:%S" 2>/dev/null || date +"%H:%M:%S")
+								backup_date_formatted=$(date -d "@$backup_date" +"%d %b %Y" 2>/dev/null || date +"%d %b %Y")
+								echo "BACKUP='$backup_in_line' TYPE='$BACKUP_SYSTEM' SIZE='$backup_size_mb' $backup_meta RUNTIME='0' TIME='$backup_time' DATE='$backup_date_formatted'" >> "$temp_backup_conf"
+							else
+								echo "$line" >> "$temp_backup_conf"
+							fi
+						fi
+					fi
+				fi
+			done < "$user_backup_conf"
+		fi
+		
+		if [ -s "$temp_backup_conf" ]; then
+			mv "$temp_backup_conf" "$user_backup_conf" 2>/dev/null || cp "$temp_backup_conf" "$user_backup_conf" 2>/dev/null
+			chmod 600 "$user_backup_conf" 2>/dev/null
+		fi
+		rm -f "$temp_backup_conf" 2>/dev/null
+	fi
+	
+	[ -f "$HESTIA/bin/v-list-user-backups" ] && "$HESTIA/bin/v-list-user-backups" "$user" >/dev/null 2>&1
+	
+	local USER_DATA="$HESTIA/data/users/$user"
+	local user_conf="$USER_DATA/user.conf"
+	if [ -f "$user_backup_conf" ] && [ -f "$user_conf" ]; then
+		local U_BACKUPS=$(grep -c "^BACKUP=" "$user_backup_conf" 2>/dev/null || echo "0")
+		if grep -q "^U_BACKUPS=" "$user_conf" 2>/dev/null; then
+			sed -i "s/^U_BACKUPS=.*/U_BACKUPS='$U_BACKUPS'/" "$user_conf"
+		else
+			echo "U_BACKUPS='$U_BACKUPS'" >> "$user_conf"
+		fi
+	fi
+	
+	if [ "$backup_count" -gt 0 ]; then
+		symlink_count=$(find "$default_backup_dir" -maxdepth 1 -type l -name "${user}.*.tar" 2>/dev/null | wc -l | tr -d ' ')
+		
+		local latest_log=""
+		local latest_time=0
+		while IFS= read -r -d '' log_file; do
+			if [ -f "$log_file" ]; then
+				local file_time=$(stat -c %Y "$log_file" 2>/dev/null || echo 0)
+				if [ "$file_time" -gt "$latest_time" ]; then
+					latest_time=$file_time
+					latest_log="$log_file"
+				fi
+			fi
+		done < <(find "$user_backup_dir" -maxdepth 1 -type f -name "${user}.*.log" -print0 2>/dev/null)
+		
+		if [ -n "$latest_log" ] && [ -f "$latest_log" ] && [ "$user_backup_dir" != "$default_backup_dir" ]; then
+			local user_log_symlink="$default_backup_dir/$user.log"
+			[ -L "$user_log_symlink" ] && rm -f "$user_log_symlink" 2>/dev/null
+			ln -sf "$latest_log" "$user_log_symlink" 2>/dev/null
+			chmod 644 "$user_log_symlink" 2>/dev/null
+		fi
+		
+		echo "[$(date)] : Updated backup list for $user ($backup_count backup(s), $symlink_count symlink(s))" | tee -a $log
+		return 0
+	fi
+	return 1
+}
+
+cleanup_old_month_backups() {
+	local backup_base_dir="$1"
+	local session_log_file="$2"
+	[ -z "$backup_base_dir" ] || [ ! -d "$backup_base_dir" ] && return 1
+	
+	if [ "$KEEP_ONLY_ONE_OLD_BACKUP" != "TRUE" ] && [ "$KEEP_ONLY_ONE_OLD_BACKUP" != "true" ]; then
+		return 0
+	fi
+	
+	local current_year=$(date +"%Y")
+	local current_month_num=$(date +"%m")
+	local current_month_str=$(date +"%b" | tr '[:lower:]' '[:upper:]')
+	local cleaned_count=0
+	
+	echo "[$(date)] : Cleaning old month backups (keeping only 1 per user)..." | tee -a $log | tee -a "$session_log_file"
+	
+	while IFS= read -r -d '' old_dir; do
+		if [ ! -d "$old_dir" ]; then
+			continue
+		fi
+		
+		local dir_name=$(basename "$old_dir")
+		local is_old_month=false
+		
+		if [[ "$dir_name" =~ ^([0-9]{1,2})\ ([A-Z]{3})\ ([0-9]{4})$ ]]; then
+			local dir_day="${BASH_REMATCH[1]}"
+			local dir_month_str="${BASH_REMATCH[2]}"
+			local dir_year="${BASH_REMATCH[3]}"
+			
+			case "$dir_month_str" in
+				JAN) dir_month_num="01" ;;
+				FEB) dir_month_num="02" ;;
+				MAR) dir_month_num="03" ;;
+				APR) dir_month_num="04" ;;
+				MAY) dir_month_num="05" ;;
+				JUN) dir_month_num="06" ;;
+				JUL) dir_month_num="07" ;;
+				AUG) dir_month_num="08" ;;
+				SEP) dir_month_num="09" ;;
+				OCT) dir_month_num="10" ;;
+				NOV) dir_month_num="11" ;;
+				DEC) dir_month_num="12" ;;
+				*) continue ;;
+			esac
+			
+			if [ "$dir_year" -lt "$current_year" ] || ([ "$dir_year" -eq "$current_year" ] && [ "$dir_month_num" -lt "$current_month_num" ]); then
+				is_old_month=true
+			fi
+		fi
+		
+		if [ "$is_old_month" = "true" ]; then
+				while IFS= read -r -d '' user_dir; do
+					if [ ! -d "$user_dir" ]; then
+						continue
+					fi
+					
+					local user=$(basename "$user_dir")
+					local latest_backup=""
+					local latest_time=0
+					local backup_count=0
+					
+					while IFS= read -r -d '' backup_file; do
+						if [ -f "$backup_file" ] && [[ "$backup_file" =~ \.tar$ ]] && [[ "$backup_file" =~ ^$user_dir/${user}\. ]]; then
+							backup_count=$((backup_count + 1))
+							local file_time=$(stat -c %Y "$backup_file" 2>/dev/null || echo 0)
+							if [ -n "$file_time" ] && [ "$file_time" -gt "$latest_time" ] 2>/dev/null; then
+								latest_time=$file_time
+								latest_backup="$backup_file"
+							fi
+						fi
+					done < <(find "$user_dir" -maxdepth 1 -type f -name "${user}.*.tar" -print0 2>/dev/null)
+					
+					if [ "$backup_count" -gt 1 ] && [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
+						local latest_backup_name=$(basename "$latest_backup")
+						local latest_backup_timestamp=$(echo "$latest_backup_name" | sed -n 's/.*\.\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}_[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}\)\.tar$/\1/p')
+						local latest_log=""
+						
+						if [ -n "$latest_backup_timestamp" ]; then
+							while IFS= read -r -d '' log_file; do
+								if [ -f "$log_file" ] && [[ "$log_file" =~ \.log$ ]] && [[ "$log_file" =~ ${user}\.${latest_backup_timestamp}\.log$ ]]; then
+									latest_log="$log_file"
+									break
+								fi
+							done < <(find "$user_dir" -maxdepth 1 -type f -name "${user}.*.log" -print0 2>/dev/null)
+						fi
+						
+						while IFS= read -r -d '' backup_file; do
+							if [ -f "$backup_file" ] && [[ "$backup_file" =~ \.tar$ ]] && [[ "$backup_file" =~ ^$user_dir/${user}\. ]] && [ "$backup_file" != "$latest_backup" ]; then
+								local backup_name=$(basename "$backup_file")
+								local backup_timestamp=$(echo "$backup_name" | sed -n 's/.*\.\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}_[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}\)\.tar$/\1/p')
+								local symlink_path="$backup_base_dir/$backup_name"
+								
+								if [ -L "$symlink_path" ]; then
+									rm -f "$symlink_path" 2>/dev/null
+								fi
+								
+								if [ -n "$backup_timestamp" ]; then
+									while IFS= read -r -d '' log_file; do
+										if [ -f "$log_file" ] && [[ "$log_file" =~ \.log$ ]] && [[ "$log_file" =~ ${user}\.${backup_timestamp}\.log$ ]]; then
+											rm -f "$log_file" 2>/dev/null
+											if [ -n "$session_log_file" ]; then
+												echo "[$(date)] :   Removed old log: $(basename "$log_file") (from $dir_name)" | tee -a $log | tee -a "$session_log_file"
+											else
+												echo "[$(date)] :   Removed old log: $(basename "$log_file") (from $dir_name)" | tee -a $log
+											fi
+										fi
+									done < <(find "$user_dir" -maxdepth 1 -type f -name "${user}.*.log" -print0 2>/dev/null)
+								fi
+								
+								local user_backup_conf="$HESTIA/data/users/$user/backup.conf"
+								if [ -f "$user_backup_conf" ]; then
+									sed -i "/BACKUP='$backup_name'/d" "$user_backup_conf" 2>/dev/null
+								fi
+								
+								rm -f "$backup_file" 2>/dev/null
+								cleaned_count=$((cleaned_count + 1))
+								
+								if [ -n "$session_log_file" ]; then
+									echo "[$(date)] :   Removed old backup: $backup_name (from $dir_name, kept latest)" | tee -a $log | tee -a "$session_log_file"
+								else
+									echo "[$(date)] :   Removed old backup: $backup_name (from $dir_name, kept latest)" | tee -a $log
+								fi
+							fi
+						done < <(find "$user_dir" -maxdepth 1 -type f -name "${user}.*.tar" -print0 2>/dev/null)
+						
+						if [ -n "$latest_log" ] && [ -f "$latest_log" ]; then
+							local log_symlink_path="$backup_base_dir/${user}.log"
+							if [ -L "$log_symlink_path" ]; then
+								local symlink_target=$(readlink -f "$log_symlink_path" 2>/dev/null)
+								if [ "$symlink_target" != "$latest_log" ]; then
+									rm -f "$log_symlink_path" 2>/dev/null
+									ln -sf "$latest_log" "$log_symlink_path" 2>/dev/null
+								fi
+							fi
+						fi
+					fi
+				done < <(find "$old_dir" -maxdepth 1 -type d -print0 2>/dev/null)
+		fi
+	done < <(find "$backup_base_dir" -maxdepth 1 -type d -print0 2>/dev/null)
+	
+	if [ "$cleaned_count" -gt 0 ]; then
+		echo "[$(date)] : Cleaned $cleaned_count old backup(s) from previous months" | tee -a $log | tee -a "$session_log_file"
+	else
+		echo "[$(date)] : No old backups to clean from previous months" | tee -a $log | tee -a "$session_log_file"
+	fi
+	
+	return 0
+}
+
+send_backup_notification() {
+	local status="$1" admin_email="$2" summary_file="$3" log_file="$4"
+	[ -z "$admin_email" ] && return 1
+	
+	local hostname=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "HestiaCP Server")
+	local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+	local backup_path="$5"
+	
+	if [ "$status" = "SUCCESS" ]; then
+		local subject="HestiaCP Backup Summary - $hostname - $timestamp"
+		local status_color="#4CAF50"
+		local status_text="✓ SUCCESS"
+	else
+		local subject="HestiaCP Backup Summary [ERRORS] - $hostname - $timestamp"
+		local status_color="#F44336"
+		local status_text="✗ CONTAINS ERRORS"
+	fi
+	
+	local SENDMAIL="$HESTIA/web/inc/mail-wrapper.php"
+	[ ! -f "$SENDMAIL" ] && SENDMAIL="/usr/local/hestia/web/inc/mail-wrapper.php"
+	[ ! -f "$SENDMAIL" ] && return 1
+	
+	local success_count=${#SUCCESS_USERS[@]}
+	local failed_count=${#FAILED_USERS[@]}
+	local total_count=$((success_count + failed_count))
+	
+	local success_list=""
+	for user in "${SUCCESS_USERS[@]}"; do
+		success_list="${success_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#4CAF50; font-weight:bold;\">✓</span> $user</td></tr>"
+	done
+	[ -z "$success_list" ] && success_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
+	
+	local failed_list=""
+	for user in "${FAILED_USERS[@]}"; do
+		failed_list="${failed_list}<tr><td style=\"padding:6px 12px; border-bottom:1px solid #eee;\"><span style=\"color:#F44336; font-weight:bold;\">✗</span> $user</td></tr>"
+	done
+	[ -z "$failed_list" ] && failed_list="<tr><td style=\"padding:6px 12px; color:#999;\">None</td></tr>"
+	
+	local html_body=$(cat << EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HestiaCP Backup Summary</title>
+</head>
+<body style="font-family: Arial, sans-serif; background:#f4f4f9; margin:0; padding:20px; color:#333;">
+<div style="max-width:760px; margin:0 auto; background:#fff; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,.1); overflow:hidden;">
+  <div style="background:${status_color}; color:#fff; padding:14px 16px; text-align:center;">
+    <h1 style="margin:0; font-size:20px;">HestiaCP Backup Summary</h1>
+  </div>
+  <div style="padding:18px;">
+    <h3 style="margin:0 0 10px 0; color:#333;">Status</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Status</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:${status_color}; font-weight:bold;">${status_text}</td></tr>
+      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Server</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee;">${hostname}</td></tr>
+      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Date</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee;">${timestamp}</td></tr>
+      <tr><td style="padding:6px 12px;"><b>Directory</b></td><td style="padding:6px 12px;">${backup_path}</td></tr>
+    </table>
+    
+    <h3 style="margin:18px 0 10px 0; color:#333;">Summary</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Successful</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:#4CAF50; font-weight:bold;">${success_count}</td></tr>
+      <tr><td style="padding:6px 12px; border-bottom:1px solid #eee;"><b>Failed</b></td><td style="padding:6px 12px; border-bottom:1px solid #eee; color:#F44336; font-weight:bold;">${failed_count}</td></tr>
+      <tr><td style="padding:6px 12px;"><b>Total</b></td><td style="padding:6px 12px; font-weight:bold;">${total_count}</td></tr>
+    </table>
+    
+    <h3 style="margin:18px 0 10px 0; color:#333;">Successful Backups</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#f9f9f9;">
+      ${success_list}
+    </table>
+    
+    <h3 style="margin:18px 0 10px 0; color:#333;">Failed Backups</h3>
+    <table cellspacing="0" cellpadding="6" style="width:100%; border-collapse:collapse; margin-bottom:20px; background:#f9f9f9;">
+      ${failed_list}
+    </table>
+    
+    <p style="margin-top:16px; font-size:12px; color:#777;">Full backup log is attached to this email.</p>
+  </div>
+  <div style="background:#f4f4f9; padding:10px; text-align:center; font-size:12px; color:#777;">
+    <p style="margin:0;">Automated notification from HestiaCP Backup System</p>
+  </div>
+</div>
+</body>
+</html>
+EOF
+)
+	
+	local mail_output=""
+	local temp_html="/tmp/backup_email_$(date +%s).html"
+	echo "$html_body" > "$temp_html"
+	
+	if [ -f "$log_file" ]; then
+		local temp_attachment="/tmp/backup_log_$(date +%s).txt"
+		cp "$log_file" "$temp_attachment" 2>/dev/null
+		
+		if [ -f "$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/PHPMailer.php" ]; then
+			local temp_php="/tmp/send_backup_email_$(date +%s).php"
+			cat > "$temp_php" << EOFPHP
+<?php
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/PHPMailer.php';
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/SMTP.php';
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/Exception.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+\$mail = new PHPMailer(true);
+try {
+	\$mail->isMail();
+	\$mail->setFrom('noreply@$hostname', 'HestiaCP Backup');
+	\$mail->addAddress('$admin_email');
+	\$mail->Subject = '$(echo "$subject" | sed "s/'/\\\'/g")';
+	\$mail->msgHTML(file_get_contents('$temp_html'));
+	\$mail->AltBody = strip_tags(file_get_contents('$temp_html'));
+	\$mail->addAttachment('$temp_attachment', 'backup_log.txt');
+	\$mail->send();
+	echo "OK";
+} catch (Exception \$e) {
+	echo "ERROR: " . \$mail->ErrorInfo;
+}
+?>
+EOFPHP
+			mail_output=$(php "$temp_php" 2>&1)
+			rm -f "$temp_php" 2>/dev/null
+		elif command -v mutt >/dev/null 2>&1; then
+			mail_output=$(cat "$temp_html" | mutt -e "set content_type=text/html" -s "$subject" -a "$temp_attachment" -- "$admin_email" 2>&1)
+		elif command -v mail >/dev/null 2>&1 && mail --version 2>&1 | grep -q "GNU Mailutils"; then
+			mail_output=$(cat "$temp_html" | mail -a "Content-Type: text/html" -s "$subject" -A "$temp_attachment" "$admin_email" 2>&1)
+		else
+			mail_output=$(php -r "
+				\$mail = file_get_contents('$temp_html');
+				\$subject = '$subject';
+				\$to = '$admin_email';
+				\$headers = 'MIME-Version: 1.0' . \"\\r\\n\";
+				\$headers .= 'Content-type: text/html; charset=UTF-8' . \"\\r\\n\";
+				\$headers .= 'From: HestiaCP Backup <noreply@$hostname>' . \"\\r\\n\";
+				mail(\$to, \$subject, \$mail, \$headers) ? 'OK' : 'ERROR';
+			" 2>&1)
+		fi
+		rm -f "$temp_attachment" 2>/dev/null
+	else
+		if [ -f "$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/PHPMailer.php" ]; then
+			local temp_php="/tmp/send_backup_email_$(date +%s).php"
+			cat > "$temp_php" << EOFPHP
+<?php
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/PHPMailer.php';
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/SMTP.php';
+require_once '$HESTIA/web/inc/vendor/phpmailer/phpmailer/src/Exception.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+\$mail = new PHPMailer(true);
+try {
+	\$mail->isMail();
+	\$mail->setFrom('noreply@$hostname', 'HestiaCP Backup');
+	\$mail->addAddress('$admin_email');
+	\$mail->Subject = '$(echo "$subject" | sed "s/'/\\\'/g")';
+	\$mail->msgHTML(file_get_contents('$temp_html'));
+	\$mail->AltBody = strip_tags(file_get_contents('$temp_html'));
+	\$mail->send();
+	echo "OK";
+} catch (Exception \$e) {
+	echo "ERROR: " . \$mail->ErrorInfo;
+}
+?>
+EOFPHP
+			mail_output=$(php "$temp_php" 2>&1)
+			rm -f "$temp_php" 2>/dev/null
+		else
+			mail_output=$(php -r "
+				\$mail = file_get_contents('$temp_html');
+				\$subject = '$subject';
+				\$to = '$admin_email';
+				\$headers = 'MIME-Version: 1.0' . \"\\r\\n\";
+				\$headers .= 'Content-type: text/html; charset=UTF-8' . \"\\r\\n\";
+				\$headers .= 'From: HestiaCP Backup <noreply@$hostname>' . \"\\r\\n\";
+				mail(\$to, \$subject, \$mail, \$headers) ? 'OK' : 'ERROR';
+			" 2>&1)
+		fi
+	fi
+	rm -f "$temp_html" 2>/dev/null
+	
+	local mail_status=$?
+	[ -n "$mail_output" ] && echo "$mail_output" | tee -a "$log_file" >/dev/null
+	return $mail_status
+}
+
+echo "[$(date)] : Step 0/5 - Applying patches..." | tee -a $log
+patch_delete_command && echo "[$(date)] : v-delete-user-backup OK" | tee -a $log
+patch_restore_command && echo "[$(date)] : v-restore-user OK" | tee -a $log
+patch_list_backup_contents && echo "[$(date)] : v-list-backup-contents OK" | tee -a $log
+echo ""
+
+echo "[$(date)] : Step 1/5 - Listing users..." | tee -a $log
+ALL_USERS=$("$BIN/v-list-users" list 2>/dev/null)
+[ -z "$ALL_USERS" ] && echo "[$(date)] : ERROR - No users found." | tee -a $log && exit 1
+
+total_users=0
+ACTIVE_USERS=()
+for user in $ALL_USERS; do
+	if [ -f "$HESTIA/data/users/$user/user.conf" ]; then
+		check_suspend=$(grep "SUSPENDED='no'" "$HESTIA/data/users/$user/user.conf" 2>/dev/null)
+		if [ -n "$check_suspend" ]; then
+			ACTIVE_USERS+=("$user")
+			total_users=$((total_users + 1))
+		fi
+	fi
+done
+echo "[$(date)] : Found $total_users active users" | tee -a $log
+[ $total_users -eq 0 ] && exit 0
+echo ""
+
+echo "[$(date)] : Step 2/5 - Checking databases..." | tee -a $log
+if command -v mysqlcheck >/dev/null 2>&1; then
+	mysqlcheck --all-databases --check --quick >/dev/null 2>&1
+	echo "[$(date)] : Database check completed" | tee -a $log
+fi
+echo ""
+
+echo "[$(date)] : Step 3/5 - Creating backup structure..." | tee -a $log
+[ -z "$BACKUP" ] && BACKUP_BASE="/backup" || BACKUP_BASE="$BACKUP"
+
+if [ -d "$BACKUP_BASE" ]; then
+	cleanup_count=0
+	for tmp_file in "$BACKUP_BASE"/*.tar "$BACKUP_BASE"/*.log; do
+		if [ -f "$tmp_file" ] && [ ! -L "$tmp_file" ] && [[ "$tmp_file" != *"*"* ]]; then
+			file_age=$(($(date +%s) - $(stat -c %Y "$tmp_file" 2>/dev/null || echo 0)))
+			if [ -n "$file_age" ] && [ "$file_age" -gt 1800 ] 2>/dev/null; then
+				rm -f "$tmp_file" 2>/dev/null && cleanup_count=$((cleanup_count + 1))
+			fi
+		fi
+	done
+	for tmp_dir in "$BACKUP_BASE"/tmp.* "$BACKUP_BASE"/backup.*; do
+		if [ -d "$tmp_dir" ] 2>/dev/null && [[ "$tmp_dir" != *"*"* ]]; then
+			dir_age=$(($(date +%s) - $(stat -c %Y "$tmp_dir" 2>/dev/null || echo 0)))
+			if [ -n "$dir_age" ] && [ "$dir_age" -gt 1800 ] 2>/dev/null; then
+				rm -rf "$tmp_dir" 2>/dev/null && cleanup_count=$((cleanup_count + 1))
+			fi
+		fi
+	done
+	[ "$cleanup_count" -gt 0 ] && echo "[$(date)] : Cleaned up $cleanup_count temporary file(s)/directory(ies) from previous runs" | tee -a $log
+fi
+
+month_num=$(date +"%m")
+month_name=$(date +"%b" | tr '[:lower:]' '[:upper:]')
+year=$(date +"%Y")
+backup_month_dir="$month_num $month_name $year"
+backup_path="$BACKUP_BASE/$backup_month_dir"
+[ ! -d "$backup_path" ] && mkdir -p "$backup_path"
+echo "[$(date)] : Backup directory: $backup_path" | tee -a $log
+
+session_log_file="$backup_path/backup_session_$(date +%Y-%m-%d_%H-%M-%S).log"
+{
+	echo "=========================================="
+	echo "HestiaCP Backup Session - $(date)"
+	echo "Server: $(hostname -f 2>/dev/null || hostname)"
+	echo "Directory: $backup_path"
+	echo "Users: $total_users"
+	echo "=========================================="
+} > "$session_log_file"
+echo ""
+
+if [ "$KEEP_ONLY_ONE_OLD_BACKUP" = "TRUE" ] || [ "$KEEP_ONLY_ONE_OLD_BACKUP" = "true" ]; then
+	cleanup_old_month_backups "$BACKUP_BASE" "$session_log_file"
+	echo ""
+fi
+
+echo "[$(date)] : Step 4/5 - Cleaning orphaned backups..." | tee -a $log | tee -a "$session_log_file"
+for user in "${ACTIVE_USERS[@]}"; do
+	user_backup_dir="$backup_path/$user"
+	[ -d "$user_backup_dir" ] && update_user_backup_list "$user" "$user_backup_dir" "$session_log_file"
+done
+echo ""
+
+echo "[$(date)] : Step 5/5 - Running backups for $total_users users..." | tee -a $log | tee -a "$session_log_file"
+current_user=0
+
+for user in "${ACTIVE_USERS[@]}"; do
+	current_user=$((current_user + 1))
+	[ ! -f "$HESTIA/data/users/$user/user.conf" ] && FAILED_USERS+=("$user") && FINAL_STATUS="CONTAINS ERRORS" && continue
+	
+	check_backup_conditions
+	check_suspend=$(grep "SUSPENDED='no'" "$HESTIA/data/users/$user/user.conf" 2>/dev/null)
+	[ -z "$check_suspend" ] && continue
+	
+	user_backup_dir="$backup_path/$user"
+	[ ! -d "$user_backup_dir" ] && mkdir -p "$user_backup_dir"
+	
+	echo "================================" | tee -a $log | tee -a "$session_log_file"
+	echo "User: $user ($current_user/$total_users)" | tee -a $log | tee -a "$session_log_file"
+	echo "--------------------------------" | tee -a $log | tee -a "$session_log_file"
+	
+	original_backup_dir="$BACKUP"
+	backup_start_time=$(date +%s)
+	user_backup_log_temp=$(mktemp /tmp/backup_${user}_XXXXXX.log 2>/dev/null || echo "/tmp/backup_${user}_$$.log")
+	
+	echo "[$(date)] : Starting backup for $user..." | tee -a $log | tee -a "$session_log_file" | tee -a "$user_backup_log_temp"
+	backup_user_internal "$user" "$user_backup_dir" "$session_log_file" "$user_backup_log_temp" 2>&1 | tee -a "$user_backup_log_temp" | tee -a $log | tee -a "$session_log_file"
+	backup_status=${PIPESTATUS[0]}
+	
+	sleep 2
+	backup_files_moved=0
+	main_backup_file=""
+	main_backup_basename=""
+	
+	for backup_location in "$BACKUP_BASE" "/backup" "$HESTIA/backup"; do
+		[ ! -d "$backup_location" ] && continue
+		while IFS= read -r backup_file; do
+			if [ -f "$backup_file" ]; then
+				file_mtime=$(stat -c %Y "$backup_file" 2>/dev/null || echo 0)
+				file_age=$(( backup_start_time - file_mtime ))
+				if [ -n "$file_age" ] && [ "$file_age" -lt 300 ] 2>/dev/null && [ "$file_age" -gt -60 ] 2>/dev/null; then
+					[[ "$backup_file" =~ \.tar$ ]] && main_backup_file="$backup_file" && main_backup_basename=$(basename "$backup_file")
+					[[ "$backup_file" =~ \.log$ ]] && rm -f "$backup_file" 2>/dev/null && continue
+					backup_filename=$(basename "$backup_file")
+					mv "$backup_file" "$user_backup_dir/" 2>/dev/null && backup_files_moved=$((backup_files_moved + 1))
+					[[ "$backup_file" =~ \.tar$ ]] && main_backup_file="$user_backup_dir/$backup_filename" && main_backup_basename="$backup_filename"
+				fi
+			fi
+		done < <(find "$backup_location" -maxdepth 1 -type f -name "${user}.*" 2>/dev/null)
+	done
+	
+	if [ -n "$main_backup_file" ] && [ -n "$main_backup_basename" ]; then
+		backup_name_no_ext="${main_backup_basename%.tar}"
+		backup_log_file="$user_backup_dir/${backup_name_no_ext}.log"
+		[ -f "$user_backup_log_temp" ] && mv "$user_backup_log_temp" "$backup_log_file" 2>/dev/null
+		
+		if [ -f "$backup_log_file" ] && [ -d "$BACKUP_BASE" ] && [ "$user_backup_dir" != "$BACKUP_BASE" ]; then
+			local user_log_symlink="$BACKUP_BASE/$user.log"
+			[ -L "$user_log_symlink" ] && rm -f "$user_log_symlink" 2>/dev/null
+			ln -sf "$backup_log_file" "$user_log_symlink" 2>/dev/null
+			chmod 644 "$user_log_symlink" 2>/dev/null
+		fi
+	fi
+	
+	backup_found=false
+	while IFS= read -r -d '' found_file; do
+		[ -f "$found_file" ] && backup_found=true && break
+	done < <(find "$user_backup_dir" -maxdepth 1 -type f -name "${user}.*" -print0 2>/dev/null)
+	
+	if [ $backup_status -eq 0 ] && [ "$backup_found" = true ]; then
+		SUCCESS_USERS+=("$user")
+		echo "[$(date)] : ✓ Backup completed for $user" | tee -a $log | tee -a "$session_log_file"
+		update_user_backup_list "$user" "$user_backup_dir" "$session_log_file"
+	else
+		FAILED_USERS+=("$user")
+		FINAL_STATUS="CONTAINS ERRORS"
+		echo "[$(date)] : ✗ Backup failed for $user" | tee -a $log | tee -a "$session_log_file"
+	fi
+	
+	rm -f "$user_backup_log_temp" 2>/dev/null
+	echo "" | tee -a $log | tee -a "$session_log_file"
+done
+
+echo "==========================================" | tee -a $log | tee -a "$session_log_file"
+echo "Backup process completed" | tee -a $log | tee -a "$session_log_file"
+echo "==========================================" | tee -a $log | tee -a "$session_log_file"
+
+if [ -d "$BACKUP_BASE" ]; then
+	echo "[$(date)] : Cleaning up /backup directory..." | tee -a $log | tee -a "$session_log_file"
+	
+	cleaned_count=0
+	
+	while IFS= read -r -d '' symlink; do
+		[ -L "$symlink" ] && target=$(readlink -f "$symlink" 2>/dev/null)
+		[ -z "$target" ] || [ ! -f "$target" ] && rm -f "$symlink" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+	done < <(find "$BACKUP_BASE" -maxdepth 1 -type l -name "*.tar" -print0 2>/dev/null)
+	
+	while IFS= read -r -d '' symlink; do
+		[ -L "$symlink" ] && target=$(readlink -f "$symlink" 2>/dev/null)
+		[ -z "$target" ] || [ ! -f "$target" ] && rm -f "$symlink" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+	done < <(find "$BACKUP_BASE" -maxdepth 1 -type l -name "*.log" -print0 2>/dev/null)
+	
+	for log_file in "$BACKUP_BASE"/*.log; do
+		if [ -f "$log_file" ] && [ ! -L "$log_file" ]; then
+			rm -f "$log_file" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+		fi
+	done
+	
+	for backup_file in "$BACKUP_BASE"/*.tar; do
+		if [ -f "$backup_file" ] && [ ! -L "$backup_file" ] && [[ "$backup_file" != *"*"* ]]; then
+			file_age=$(($(date +%s) - $(stat -c %Y "$backup_file" 2>/dev/null || echo 0)))
+			file_size=$(stat -c %s "$backup_file" 2>/dev/null || echo 0)
+			is_valid_tar=0
+			
+			if [ -n "$file_size" ] && [ "$file_size" -gt 1024 ] 2>/dev/null; then
+				tar -tzf "$backup_file" >/dev/null 2>&1 && is_valid_tar=1
+				[ "$is_valid_tar" -eq 0 ] && tar -tf "$backup_file" >/dev/null 2>&1 && is_valid_tar=1
+			fi
+			
+			if [ -n "$file_age" ] && ([ "$file_age" -gt 3600 ] 2>/dev/null || [ "$is_valid_tar" -eq 0 ]); then
+				if [ "$is_valid_tar" -eq 0 ] && [ -n "$file_age" ] && [ "$file_age" -lt 3600 ] 2>/dev/null; then
+					echo "[$(date)] : Removing invalid/incomplete backup file: $(basename "$backup_file")" | tee -a $log | tee -a "$session_log_file"
+				else
+					echo "[$(date)] : Removing orphaned backup file: $(basename "$backup_file")" | tee -a $log | tee -a "$session_log_file"
+				fi
+				rm -f "$backup_file" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+			fi
+		fi
+	done
+	
+	for tmp_dir in "$BACKUP_BASE"/tmp.* "$BACKUP_BASE"/backup.*; do
+		if [ -d "$tmp_dir" ] 2>/dev/null && [[ "$tmp_dir" != *"*"* ]]; then
+			dir_age=$(($(date +%s) - $(stat -c %Y "$tmp_dir" 2>/dev/null || echo 0)))
+			if [ -n "$dir_age" ] && [ "$dir_age" -gt 3600 ] 2>/dev/null; then
+				echo "[$(date)] : Removing old temporary directory: $(basename "$tmp_dir")" | tee -a $log | tee -a "$session_log_file"
+				rm -rf "$tmp_dir" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+			fi
+		fi
+	done
+	
+	[ "$cleaned_count" -gt 0 ] && echo "[$(date)] : Cleaned up $cleaned_count orphaned file(s)/symlink(s) from /backup" | tee -a $log | tee -a "$session_log_file"
+fi
+
+for user in "${ACTIVE_USERS[@]}"; do
+	user_backup_dir="$backup_path/$user"
+	[ -d "$user_backup_dir" ] && update_user_backup_list "$user" "$user_backup_dir" "$session_log_file"
+done
+
+[ -f "$HESTIA/bin/v-update-sys-queue" ] && "$HESTIA/bin/v-update-sys-queue" backup 2>/dev/null
+
+summary_file="/tmp/backup_summary_$(date +%Y%m%d_%H%M%S).txt"
+{
+	[ "$FINAL_STATUS" = "SUCCESS" ] && echo "STATUS: ✓ SUCCESS" || echo "STATUS: ✗ CONTAINS ERRORS"
+	echo ""
+	echo "Successful: ${#SUCCESS_USERS[@]}"
+	for user in "${SUCCESS_USERS[@]}"; do echo "  ✓ $user"; done
+	echo ""
+	echo "Failed: ${#FAILED_USERS[@]}"
+	for user in "${FAILED_USERS[@]}"; do echo "  ✗ $user"; done
+	echo ""
+	echo "Total: $((${#SUCCESS_USERS[@]} + ${#FAILED_USERS[@]}))"
+} > "$summary_file"
+
+cat "$summary_file" | tee -a "$log" | tee -a "$session_log_file"
+
+if [ -n "$ADMIN_EMAIL" ]; then
+	echo "[$(date)] : Sending email notification to $ADMIN_EMAIL..." | tee -a "$log"
+	if send_backup_notification "$FINAL_STATUS" "$ADMIN_EMAIL" "$summary_file" "$log" "$backup_path"; then
+		echo "[$(date)] : Email sent successfully to $ADMIN_EMAIL" | tee -a "$log"
+	else
+		echo "[$(date)] : Failed to send email to $ADMIN_EMAIL" | tee -a "$log"
+	fi
+else
+	echo "[$(date)] : No admin email configured (CONTACT not found in user.conf), skipping email notification" | tee -a "$log"
+fi
+
+rm -f "$summary_file" 2>/dev/null
+exit
