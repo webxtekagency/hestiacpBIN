@@ -179,15 +179,19 @@ check_resources() {
     fi
     
     log_message "${YELLOW}Memory:${NC}"
-    local mem_info=$(free -m 2>/dev/null | awk '/^Mem:/ {print $2,$3,$4,$7}')
-    if [ -n "$mem_info" ]; then
-        local total_mem=$(echo "$mem_info" | awk '{print $1}')
-        local used_mem=$(echo "$mem_info" | awk '{print $2}')
-        local free_mem=$(echo "$mem_info" | awk '{print $3}')
-        local available_mem=$(echo "$mem_info" | awk '{print $4}')
+    local mem_line=$(free -m 2>/dev/null | awk '/^Mem:/')
+    if [ -n "$mem_line" ]; then
+        local total_mem=$(echo "$mem_line" | awk '{print $2}')
+        local used_mem=$(echo "$mem_line" | awk '{print $3}')
+        local available_mem=$(echo "$mem_line" | awk '{print $7}')
         
-        if [ -n "$available_mem" ] && [ "$available_mem" -gt 0 ] 2>/dev/null; then
+        if [ -z "$available_mem" ] || [ "$available_mem" -eq 0 ] 2>/dev/null; then
+            available_mem=$(echo "$mem_line" | awk '{print $4}')
+        fi
+        
+        if [ -n "$available_mem" ] && [ "$available_mem" -gt 0 ] 2>/dev/null && [ "$available_mem" -lt "$total_mem" ] 2>/dev/null; then
             local mem_usage=$(echo "$available_mem $total_mem" | awk '{printf "%.0f", (($2 - $1) / $2) * 100}')
+            used_mem=$((total_mem - available_mem))
         else
             local mem_usage=$(echo "$used_mem $total_mem" | awk '{printf "%.0f", ($1 / $2) * 100}')
         fi
@@ -195,6 +199,7 @@ check_resources() {
         [ -z "$mem_usage" ] && mem_usage=0
         [ "$mem_usage" -lt 0 ] 2>/dev/null && mem_usage=0
         [ "$mem_usage" -gt 100 ] 2>/dev/null && mem_usage=100
+        [ -z "$used_mem" ] && used_mem=0
         
         if [ "$mem_usage" -gt 90 ] 2>/dev/null; then
             log_message "${RED}[FAIL] Memory Usage: ${mem_usage}% (${used_mem}MB / ${total_mem}MB) - High${NC}"
@@ -2051,8 +2056,19 @@ send_html_email() {
         [ "$health_level" = "POOR" ] && module_color="#FF9800"
         [ "$health_level" = "FAIR" ] && module_color="#FFC107"
         
-        modules_list="${modules_list}<tr><td style=\"padding:8px 12px; border-bottom:1px solid #555; color:#E0E0E0;\"><b style=\"color:${module_color};\">$module</b></td><td style=\"padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;\">$details</td></tr>"
+        modules_list="${modules_list}<tr><td style=\"padding:8px 12px; border-bottom:1px solid #555; color:#E0E0E0;\"><b style=\"color:${module_color};\">$module</b> <span style=\"color:#666; font-size:11px;\">($health_score/100)</span></td><td style=\"padding:8px 12px; border-bottom:1px solid #555; color:#A0A0A0;\">$details</td></tr>"
     done
+    
+    local critical_info=""
+    if [ -n "${detailed_report[services]}" ]; then
+        critical_info="${critical_info}<p style=\"margin:10px 0; padding:10px; background:#2C2C2C; border-left:3px solid ${status_color}; color:#E0E0E0;\"><b>Services:</b> ${detailed_report[services]}</p>"
+    fi
+    if [ -n "${detailed_report[fail2ban]}" ]; then
+        critical_info="${critical_info}<p style=\"margin:10px 0; padding:10px; background:#2C2C2C; border-left:3px solid ${status_color}; color:#E0E0E0;\"><b>Fail2Ban:</b> ${detailed_report[fail2ban]}</p>"
+    fi
+    if [ -n "${detailed_report[system_resources]}" ]; then
+        critical_info="${critical_info}<p style=\"margin:10px 0; padding:10px; background:#2C2C2C; border-left:3px solid ${status_color}; color:#E0E0E0;\"><b>Resources:</b> ${detailed_report[system_resources]}</p>"
+    fi
     
     local html_body="<!DOCTYPE html>
 <html lang=\"en\">
@@ -2088,12 +2104,23 @@ send_html_email() {
       </tr>
     </table>
     
-    <h3 style=\"margin:20px 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;\">System Modules</h3>
+    ${critical_info}
+    
+    <h3 style=\"margin:20px 0 12px 0; color:#FFFFFF; font-size:16px; font-weight:bold;\">System Modules Status</h3>
     <table cellspacing=\"0\" cellpadding=\"0\" style=\"width:100%; border-collapse:collapse; background:#2C2C2C; border:1px solid #555;\">
+      <thead>
+        <tr style=\"background:#1A1A1A;\">
+          <th style=\"padding:10px 12px; text-align:left; color:#E0E0E0; border-bottom:2px solid #555;\">Module</th>
+          <th style=\"padding:10px 12px; text-align:left; color:#E0E0E0; border-bottom:2px solid #555;\">Details</th>
+        </tr>
+      </thead>
+      <tbody>
       ${modules_list}
+      </tbody>
     </table>
     
-    <p style=\"margin-top:20px; font-size:12px; color:#A0A0A0;\">Full report log is attached to this email.</p>
+    <p style=\"margin-top:20px; font-size:12px; color:#A0A0A0;\">Full detailed report log is attached to this email.</p>
+    <p style=\"margin-top:10px; font-size:11px; color:#666;\">Report generated on: ${timestamp}</p>
   </div>
   <div style=\"background:#2C2C2C; padding:12px; text-align:center; font-size:11px; color:#A0A0A0; border-top:1px solid #555;\">
     ${hostname} - ${timestamp}
@@ -2142,13 +2169,38 @@ EOFPHP
             cat "$temp_html" | $SENDMAIL -s "$subject" "$admin_email" "yes" 2>/dev/null
         fi
     else
-        (
-            echo "Subject: $subject"
-            echo "MIME-Version: 1.0"
-            echo "Content-Type: text/html; charset=UTF-8"
-            echo
-            cat "$temp_html"
-        ) | /usr/sbin/sendmail "$admin_email" 2>/dev/null
+        if [ -f "$LOG_FILE" ]; then
+            (
+                echo "Subject: $subject"
+                echo "MIME-Version: 1.0"
+                echo "From: noreply@$hostname"
+                echo "To: $admin_email"
+                echo "Content-Type: multipart/mixed; boundary=\"BOUNDARY123\""
+                echo
+                echo "--BOUNDARY123"
+                echo "Content-Type: text/html; charset=UTF-8"
+                echo "Content-Transfer-Encoding: 7bit"
+                echo
+                cat "$temp_html"
+                echo
+                echo "--BOUNDARY123"
+                echo "Content-Type: text/plain; name=\"system_report.log\""
+                echo "Content-Disposition: attachment; filename=\"system_report.log\""
+                echo "Content-Transfer-Encoding: base64"
+                echo
+                base64 < "$LOG_FILE" 2>/dev/null || cat "$LOG_FILE"
+                echo
+                echo "--BOUNDARY123--"
+            ) | /usr/sbin/sendmail "$admin_email" 2>/dev/null
+        else
+            (
+                echo "Subject: $subject"
+                echo "MIME-Version: 1.0"
+                echo "Content-Type: text/html; charset=UTF-8"
+                echo
+                cat "$temp_html"
+            ) | /usr/sbin/sendmail "$admin_email" 2>/dev/null
+        fi
     fi
     
     rm -f "$temp_html" 2>/dev/null
