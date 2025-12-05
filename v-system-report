@@ -142,36 +142,30 @@ check_resources() {
     local load_avg=$(cat /proc/loadavg 2>/dev/null | awk '{print $3}')
     local cpu_cores=$(nproc 2>/dev/null || echo "1")
     
-    local cpu_line=$(top -bn1 2>/dev/null | grep 'Cpu(s)' | head -1)
     local cpu_usage=0
-    if [ -n "$cpu_line" ]; then
-        local cpu_us=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="us") print $(i-1)}')
-        local cpu_sy=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="sy") print $(i-1)}')
-        local cpu_ni=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="ni") print $(i-1)}')
-        local cpu_wa=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="wa") print $(i-1)}')
-        local cpu_hi=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="hi") print $(i-1)}')
-        local cpu_si=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="si") print $(i-1)}')
-        local cpu_st=$(echo "$cpu_line" | awk -F'[ ,%]+' '{for(i=1;i<=NF;i++) if($i=="st") print $(i-1)}')
-        
-        cpu_us=$(echo "$cpu_us" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_sy=$(echo "$cpu_sy" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_ni=$(echo "$cpu_ni" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_wa=$(echo "$cpu_wa" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_hi=$(echo "$cpu_hi" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_si=$(echo "$cpu_si" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        cpu_st=$(echo "$cpu_st" | tr -d '\n\r ' | grep -oE '^[0-9]+\.?[0-9]*$' || echo "0")
-        
-        [ -z "$cpu_us" ] && cpu_us=0
-        [ -z "$cpu_sy" ] && cpu_sy=0
-        [ -z "$cpu_ni" ] && cpu_ni=0
-        [ -z "$cpu_wa" ] && cpu_wa=0
-        [ -z "$cpu_hi" ] && cpu_hi=0
-        [ -z "$cpu_si" ] && cpu_si=0
-        [ -z "$cpu_st" ] && cpu_st=0
-        
-        cpu_usage=$(echo "$cpu_us $cpu_sy $cpu_ni $cpu_wa $cpu_hi $cpu_si $cpu_st" | awk '{printf "%.0f", $1+$2+$3+$4+$5+$6+$7}')
+    if command -v vmstat >/dev/null 2>&1; then
+        cpu_usage=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print 100 - $15}' | awk '{printf "%.0f", $1}')
         [ -z "$cpu_usage" ] && cpu_usage=0
     fi
+    
+    if [ "$cpu_usage" -eq 0 ] 2>/dev/null; then
+        local cpu_line=$(top -bn1 2>/dev/null | grep -i 'cpu(s)' | head -1)
+        if [ -n "$cpu_line" ]; then
+            local cpu_idle=$(echo "$cpu_line" | grep -oE '[0-9]+\.[0-9]+%id' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$cpu_idle" ]; then
+                cpu_usage=$(echo "100 - $cpu_idle" | bc -l 2>/dev/null | awk '{printf "%.0f", $1}')
+            else
+                local cpu_idle=$(echo "$cpu_line" | grep -oE 'id, [0-9]+\.[0-9]+%' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                if [ -n "$cpu_idle" ]; then
+                    cpu_usage=$(echo "100 - $cpu_idle" | bc -l 2>/dev/null | awk '{printf "%.0f", $1}')
+                fi
+            fi
+        fi
+    fi
+    
+    [ -z "$cpu_usage" ] && cpu_usage=0
+    [ "$cpu_usage" -lt 0 ] 2>/dev/null && cpu_usage=0
+    [ "$cpu_usage" -gt 100 ] 2>/dev/null && cpu_usage=100
     
     if [ -n "$load_avg" ] && [ -n "$cpu_cores" ]; then
         if (( $(echo "$load_avg > $cpu_cores" | bc -l 2>/dev/null || echo "0") )); then
@@ -185,11 +179,22 @@ check_resources() {
     fi
     
     log_message "${YELLOW}Memory:${NC}"
-    local mem_info=$(free -m 2>/dev/null | awk '/Mem:/ {print $2,$3}')
+    local mem_info=$(free -m 2>/dev/null | awk '/^Mem:/ {print $2,$3,$4,$7}')
     if [ -n "$mem_info" ]; then
         local total_mem=$(echo "$mem_info" | awk '{print $1}')
         local used_mem=$(echo "$mem_info" | awk '{print $2}')
-        local mem_usage=$(free 2>/dev/null | awk '/Mem:/ {print int($3/$2 * 100)}')
+        local free_mem=$(echo "$mem_info" | awk '{print $3}')
+        local available_mem=$(echo "$mem_info" | awk '{print $4}')
+        
+        if [ -n "$available_mem" ] && [ "$available_mem" -gt 0 ] 2>/dev/null; then
+            local mem_usage=$(echo "$available_mem $total_mem" | awk '{printf "%.0f", (($2 - $1) / $2) * 100}')
+        else
+            local mem_usage=$(echo "$used_mem $total_mem" | awk '{printf "%.0f", ($1 / $2) * 100}')
+        fi
+        
+        [ -z "$mem_usage" ] && mem_usage=0
+        [ "$mem_usage" -lt 0 ] 2>/dev/null && mem_usage=0
+        [ "$mem_usage" -gt 100 ] 2>/dev/null && mem_usage=100
         
         if [ "$mem_usage" -gt 90 ] 2>/dev/null; then
             log_message "${RED}[FAIL] Memory Usage: ${mem_usage}% (${used_mem}MB / ${total_mem}MB) - High${NC}"
@@ -200,12 +205,25 @@ check_resources() {
     fi
     
     log_message "${YELLOW}Disk:${NC}"
-    local disk_info=$(df -h / 2>/dev/null | awk 'NR==2 {print $2,$3,$4,$5}')
+    local disk_info=$(df -h / 2>/dev/null | awk 'NR==2')
     if [ -n "$disk_info" ]; then
-        local total_size=$(echo "$disk_info" | awk '{print $1}')
-        local used_size=$(echo "$disk_info" | awk '{print $2}')
-        local avail_size=$(echo "$disk_info" | awk '{print $3}')
-        local disk_usage=$(echo "$disk_info" | awk '{print $4}' | sed 's/%//')
+        local total_size=$(echo "$disk_info" | awk '{print $2}')
+        local used_size=$(echo "$disk_info" | awk '{print $3}')
+        local avail_size=$(echo "$disk_info" | awk '{print $4}')
+        local disk_usage_str=$(echo "$disk_info" | awk '{print $5}' | sed 's/%//')
+        local disk_usage=$(echo "$disk_usage_str" | grep -oE '^[0-9]+' || echo "0")
+        
+        if [ -z "$disk_usage" ] || [ "$disk_usage" = "" ]; then
+            local used_bytes=$(df / 2>/dev/null | awk 'NR==2 {print $3}')
+            local total_bytes=$(df / 2>/dev/null | awk 'NR==2 {print $2}')
+            if [ -n "$used_bytes" ] && [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
+                disk_usage=$(echo "$used_bytes $total_bytes" | awk '{printf "%.0f", ($1 / $2) * 100}')
+            fi
+        fi
+        
+        [ -z "$disk_usage" ] && disk_usage=0
+        [ "$disk_usage" -lt 0 ] 2>/dev/null && disk_usage=0
+        [ "$disk_usage" -gt 100 ] 2>/dev/null && disk_usage=100
         
         if [ "$disk_usage" -gt 90 ] 2>/dev/null; then
             log_message "${RED}[FAIL] Disk Usage: ${disk_usage}% (${used_size} / ${total_size}, ${avail_size} available) - High${NC}"
@@ -369,7 +387,12 @@ check_php_status() {
                 ((issues++))
             fi
             
-            local processes=$(run_with_timeout 2 "pgrep -c 'php${version}-fpm' 2>/dev/null || echo '0'")
+            local processes=0
+            if command -v pgrep >/dev/null 2>&1; then
+                processes=$(pgrep -c "php${version}-fpm" 2>/dev/null || echo "0")
+            else
+                processes=$(ps aux | grep -c "[p]hp${version}-fpm" || echo "0")
+            fi
             processes=$(echo "$processes" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$processes" ] && processes=0
             total_processes=$((total_processes + processes))
@@ -385,7 +408,11 @@ check_php_status() {
     else
         log_message "${GREEN}[OK] PHP versions installed: $(IFS=', '; echo "${php_versions[*]}")${NC}"
         if [ "$total_processes" -eq 0 ] 2>/dev/null; then
-            total_processes=$(pgrep -c 'php-fpm' 2>/dev/null || echo "0")
+            if command -v pgrep >/dev/null 2>&1; then
+                total_processes=$(pgrep -c 'php-fpm' 2>/dev/null || echo "0")
+            else
+                total_processes=$(ps aux | grep -c '[p]hp-fpm' || echo "0")
+            fi
             total_processes=$(echo "$total_processes" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$total_processes" ] && total_processes=0
         fi
@@ -555,18 +582,16 @@ check_fail2ban_status() {
         for log_file in "${log_files[@]}"; do
             [ ! -f "$log_file" ] && continue
             
-            local file_bans=$(grep -a "^$today" "$log_file" 2>/dev/null | grep "NOTICE" | grep -E "\[.*\] Ban [0-9]" | grep -v "already banned" | wc -l || echo "0")
-            file_bans=$(echo "$file_bans" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+            local file_bans=$(grep -a "^$today" "$log_file" 2>/dev/null | grep "NOTICE" | grep -E "\[.*\] Ban [0-9]" | grep -v "already banned" | wc -l 2>/dev/null | tr -d ' ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$file_bans" ] && file_bans=0
             bans_today=$((bans_today + file_bans))
             
-            local file_unbans=$(grep -a "^$today" "$log_file" 2>/dev/null | grep "NOTICE" | grep -E "\[.*\] Unban [0-9]" | wc -l || echo "0")
-            file_unbans=$(echo "$file_unbans" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+            local file_unbans=$(grep -a "^$today" "$log_file" 2>/dev/null | grep "NOTICE" | grep -E "\[.*\] Unban [0-9]" | wc -l 2>/dev/null | tr -d ' ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$file_unbans" ] && file_unbans=0
             unbans_today=$((unbans_today + file_unbans))
         done
-        bans_today=$(echo "$bans_today" | tr -d '\n\r ' | sed 's/^0*//' | grep -oE '^[0-9]+$' || echo "0")
-        unbans_today=$(echo "$unbans_today" | tr -d '\n\r ' | sed 's/^0*//' | grep -oE '^[0-9]+$' || echo "0")
+        bans_today=$(echo "$bans_today" | tr -d '\n\r\t ' | grep -oE '^[0-9]+$' || echo "0")
+        unbans_today=$(echo "$unbans_today" | tr -d '\n\r\t ' | grep -oE '^[0-9]+$' || echo "0")
         [ -z "$bans_today" ] && bans_today=0
         [ -z "$unbans_today" ] && unbans_today=0
         
@@ -592,8 +617,7 @@ check_fail2ban_status() {
                             local lines_after=$(echo "$jail_status" | tail -n +$ip_section_start | head -20)
                             local all_ips=$(echo "$lines_after" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || echo "")
                             if [ -n "$all_ips" ]; then
-                                jail_banned=$(echo "$all_ips" | wc -l)
-                                jail_banned=$(echo "$jail_banned" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+                                jail_banned=$(echo "$all_ips" | wc -l 2>/dev/null | tr -d ' ' | grep -oE '^[0-9]+$' || echo "0")
                             fi
                         fi
                         [ -z "$jail_banned" ] && jail_banned=0
@@ -602,7 +626,7 @@ check_fail2ban_status() {
                             local currently_banned_line=$(echo "$jail_status" | grep -i "Currently banned:" | head -1)
                             if [ -n "$currently_banned_line" ]; then
                                 jail_banned=$(echo "$currently_banned_line" | awk '{print $NF}' | head -1)
-                                jail_banned=$(echo "$jail_banned" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+                                jail_banned=$(echo "$jail_banned" | tr -d '\n\r\t ' | grep -oE '^[0-9]+$' || echo "0")
                             fi
                         fi
                         [ -z "$jail_banned" ] && jail_banned=0
@@ -613,7 +637,7 @@ check_fail2ban_status() {
                         if [ "$jail_total_banned" = "0" ] || [ -z "$jail_total_banned" ]; then
                             jail_total_banned=$(echo "$jail_status" | grep -i "Total banned" | grep -oE '[0-9]+' | head -1 2>/dev/null || echo "0")
                         fi
-                        jail_total_banned=$(echo "$jail_total_banned" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+                        jail_total_banned=$(echo "$jail_total_banned" | tr -d '\n\r\t ' | grep -oE '^[0-9]+$' || echo "0")
                         [ -z "$jail_total_banned" ] && jail_total_banned=0
                         total_banned=$((total_banned + jail_total_banned))
                         
@@ -621,7 +645,7 @@ check_fail2ban_status() {
                         if [ "$jail_file_count" = "0" ] || [ -z "$jail_file_count" ]; then
                             jail_file_count=$(echo "$jail_status" | grep -i "Total failed" | grep -oE '[0-9]+' | head -1 2>/dev/null || echo "0")
                         fi
-                        jail_file_count=$(echo "$jail_file_count" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+                        jail_file_count=$(echo "$jail_file_count" | tr -d '\n\r\t ' | grep -oE '^[0-9]+$' || echo "0")
                         [ -z "$jail_file_count" ] && jail_file_count=0
                         
                         log_message "${GREEN}[OK] Jail $jail: $jail_banned banned IP(s), $jail_file_count failed attempts${NC}"
@@ -1005,12 +1029,10 @@ check_backup_status() {
             local backup_files=0
             local symlink_backups=0
             
-            backup_files=$(find "$backup_dir" -maxdepth 4 -name "*.tar" -type f 2>/dev/null | wc -l)
-            backup_files=$(echo "$backup_files" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+            backup_files=$(find "$backup_dir" -maxdepth 4 -name "*.tar" -type f 2>/dev/null | wc -l | tr -d ' ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$backup_files" ] && backup_files=0
             
-            symlink_backups=$(find "$backup_dir" -maxdepth 1 -name "*.tar" -type l 2>/dev/null | wc -l)
-            symlink_backups=$(echo "$symlink_backups" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+            symlink_backups=$(find "$backup_dir" -maxdepth 1 -name "*.tar" -type l 2>/dev/null | wc -l | tr -d ' ' | grep -oE '^[0-9]+$' || echo "0")
             [ -z "$symlink_backups" ] && symlink_backups=0
             
             local total_backups=$((backup_files + symlink_backups))
@@ -1182,12 +1204,27 @@ check_php_errors() {
         [ "$site_php_errors" -gt 50 ] && ((issues++))
     fi
     
-    local php_processes=$(ps aux | grep -c "[p]hp-fpm" || echo "0")
-    local php_processes_zombie=$(ps aux | grep "[p]hp-fpm" | awk '$8 ~ /Z/ {count++} END {print count+0}' || echo "0")
-    php_processes=$(echo "$php_processes" | tr -d '\n\r ' | sed 's/^0*//')
-    php_processes_zombie=$(echo "$php_processes_zombie" | tr -d '\n\r ' | sed 's/^0*//')
-    [ -z "$php_processes" ] || ! [[ "$php_processes" =~ ^[0-9]+$ ]] && php_processes=0
-    [ -z "$php_processes_zombie" ] || ! [[ "$php_processes_zombie" =~ ^[0-9]+$ ]] && php_processes_zombie=0
+    local php_processes=0
+    if command -v pgrep >/dev/null 2>&1; then
+        php_processes=$(pgrep -c 'php-fpm' 2>/dev/null || echo "0")
+    else
+        php_processes=$(ps aux | grep -c "[p]hp-fpm" || echo "0")
+    fi
+    php_processes=$(echo "$php_processes" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+    [ -z "$php_processes" ] && php_processes=0
+    
+    local php_processes_zombie=0
+    if command -v pgrep >/dev/null 2>&1; then
+        for pid in $(pgrep 'php-fpm' 2>/dev/null); do
+            if ps -o stat= -p "$pid" 2>/dev/null | grep -q 'Z'; then
+                php_processes_zombie=$((php_processes_zombie + 1))
+            fi
+        done
+    else
+        php_processes_zombie=$(ps aux | grep "[p]hp-fpm" | awk '$8 ~ /Z/ {count++} END {print count+0}' || echo "0")
+    fi
+    php_processes_zombie=$(echo "$php_processes_zombie" | tr -d '\n\r ' | grep -oE '^[0-9]+$' || echo "0")
+    [ -z "$php_processes_zombie" ] && php_processes_zombie=0
     crashed_processes=$php_processes_zombie
     
     if [ "$php_errors_today" -gt 0 ] 2>/dev/null; then
@@ -1496,16 +1533,16 @@ check_disk_usage() {
         local user=$(basename "$user_home")
         [ "$user" = "root" ] && continue
         
-        local user_size=$(du -sm "$user_home" 2>/dev/null | awk '{print $1}' || echo "0")
-        user_size=$(echo "$user_size" | tr -d '\n\r ' | sed 's/^0*//')
-        [ -z "$user_size" ] || ! [[ "$user_size" =~ ^[0-9]+$ ]] && user_size=0
+        local user_size_raw=$(du -sm "$user_home" 2>/dev/null | awk '{print $1}' || echo "0")
+        local user_size=$(echo "$user_size_raw" | grep -oE '^[0-9]+$' || echo "0")
+        [ -z "$user_size" ] && user_size=0
         
         if [ "$user_size" -gt 0 ] 2>/dev/null; then
             ((total_users++))
             total_size=$((total_size + user_size))
             
             if [ "$user_size" -gt 5000 ] 2>/dev/null; then
-                local user_size_gb=$((user_size / 1024))
+                local user_size_gb=$(echo "$user_size 1024" | awk '{printf "%.1f", $1 / $2}')
                 log_message "${YELLOW}[WARN] User $user: ${user_size_gb}GB (${user_size}MB)${NC}"
                 ((high_usage_users++))
                 ((issues++))
@@ -1514,21 +1551,21 @@ check_disk_usage() {
     done
     
     if [ "$total_users" -gt 0 ] 2>/dev/null; then
-        local total_size_gb=$((total_size / 1024))
+        local total_size_gb=$(echo "$total_size 1024" | awk '{printf "%.2f", $1 / $2}')
         log_message "${GREEN}[OK] Total users: $total_users, Total size: ${total_size_gb}GB (${total_size}MB)${NC}"
     fi
     
-    local backup_size=$(du -sm /backup 2>/dev/null | awk '{print $1}' || echo "0")
-    backup_size=$(echo "$backup_size" | tr -d '\n\r ' | sed 's/^0*//')
-    [ -z "$backup_size" ] || ! [[ "$backup_size" =~ ^[0-9]+$ ]] && backup_size=0
+    local backup_size_raw=$(du -sm /backup 2>/dev/null | awk '{print $1}' || echo "0")
+    local backup_size=$(echo "$backup_size_raw" | grep -oE '^[0-9]+$' || echo "0")
+    [ -z "$backup_size" ] && backup_size=0
     
     if [ "$backup_size" -gt 10000 ] 2>/dev/null; then
-        local backup_size_gb=$((backup_size / 1024))
+        local backup_size_gb=$(echo "$backup_size 1024" | awk '{printf "%.2f", $1 / $2}')
         log_message "${YELLOW}[WARN] Backup directory: ${backup_size_gb}GB (${backup_size}MB)${NC}"
         ((issues++))
     else
-        local backup_size_gb=$((backup_size / 1024))
         if [ "$backup_size" -gt 1024 ] 2>/dev/null; then
+            local backup_size_gb=$(echo "$backup_size 1024" | awk '{printf "%.2f", $1 / $2}')
             log_message "${GREEN}[OK] Backup directory size: ${backup_size_gb}GB (${backup_size}MB)${NC}"
         else
             log_message "${GREEN}[OK] Backup directory size: ${backup_size}MB${NC}"
