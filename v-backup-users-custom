@@ -4,7 +4,7 @@
 # CONFIGURATION - Edit these if needed
 #==========================================
 # Leave empty to auto-detect admin user with ROLE='admin'
-# Or set manually: ADMIN_USER_OVERRIDE="adminx078sys"
+# Or set manually: ADMIN_USER_OVERRIDE="admin"
 ADMIN_USER_OVERRIDE=""
 
 # Leave empty to use the CONTACT email from admin user (recommended)
