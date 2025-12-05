@@ -125,6 +125,7 @@ FINAL_STATUS='SUCCESS'
 TASKS_SUCCESS=()
 TASKS_FAILED=()
 TASKS_SKIPPED=()
+TOTAL_CLEANED_KB=0
 
 convert_space() {
     local space_kb=$1
@@ -139,9 +140,9 @@ convert_space() {
 
         if (( $(echo "$space_mb < 1024" | bc -l 2>/dev/null) )); then
             printf "%.2f MB" $space_mb
-    else
+        else
             printf "%.2f GB" $space_gb
-    fi
+        fi
     else
         local space_mb=$((space_kb / 1024))
         if [ "$space_mb" -lt 1024 ]; then
@@ -151,6 +152,29 @@ convert_space() {
             echo "${space_gb} GB"
         fi
     fi
+}
+
+measure_cleanup() {
+    local path="$1"
+    local before_kb=0
+    local after_kb=0
+    
+    if [ -e "$path" ]; then
+        if [ -d "$path" ]; then
+            before_kb=$(du -sk "$path" 2>/dev/null | cut -f1)
+            [ -z "$before_kb" ] && before_kb=0
+        elif [ -f "$path" ]; then
+            before_kb=$(stat -c%s "$path" 2>/dev/null || echo 0)
+            before_kb=$((before_kb / 1024))
+        fi
+    fi
+    
+    echo "$before_kb"
+}
+
+add_cleaned_space() {
+    local cleaned_kb=$1
+    [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null && TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
 }
 
 run_task() {
@@ -179,10 +203,34 @@ run_task() {
 clean_rotated_logs() {
     local log_dir="$1"
     local days="$2"
-    [ -d "$log_dir" ] || return 0
+    local cleaned_kb=0
+    [ -d "$log_dir" ] || { echo "0"; return 0; }
+    
+    local before_kb=$(measure_cleanup "$log_dir")
+    
+    local truncated_size=0
+    while IFS= read -r -d '' logfile; do
+        if [ -f "$logfile" ]; then
+            local log_size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
+            if [ "$log_size" -gt 104857600 ]; then
+                truncated_size=$((truncated_size + log_size))
+            fi
+        fi
+    done < <(find "$log_dir" -type f -name "*.log" -size +100M -print0 2>/dev/null)
+    
     find "$log_dir" -type f \( -name "*.log.*" -o -name "*.gz" -o -name "*.[0-9]" \) -mtime +${days} -delete 2>/dev/null
     find "$log_dir" -type f -name "*.log" -size +100M -exec truncate -s 0 {} \; 2>/dev/null
-    return 0
+    
+    local after_kb=$(measure_cleanup "$log_dir")
+    cleaned_kb=$((before_kb - after_kb))
+    [ "$cleaned_kb" -lt 0 ] && cleaned_kb=0
+    
+    if [ "$truncated_size" -gt 0 ]; then
+        truncated_size=$((truncated_size / 1024))
+        cleaned_kb=$((cleaned_kb + truncated_size))
+    fi
+    
+    echo "$cleaned_kb"
 }
 
 if command -v mariadb >/dev/null 2>&1; then
@@ -204,13 +252,78 @@ echo "=========================================="
 echo ""
 echo "--- SYSTEM CLEANUP ---"
 
-run_task "Journalctl logs (>${JOURNALCTL_RETENTION_DAYS}d)" \
-    "journalctl --vacuum-time=${JOURNALCTL_RETENTION_DAYS}d" \
-    "$CLEAN_JOURNALCTL"
+if [ "$CLEAN_JOURNALCTL" = "TRUE" ] || [ "$CLEAN_JOURNALCTL" = "true" ]; then
+    echo -n "[$(date)] : Journalctl logs (>${JOURNALCTL_RETENTION_DAYS}d)... "
+    journalctl_output=$(journalctl --vacuum-time=${JOURNALCTL_RETENTION_DAYS}d 2>&1)
+    if [ $? -eq 0 ]; then
+        freed_space=$(echo "$journalctl_output" | grep -oP 'Freed \K[\d.]+' | head -1)
+        freed_unit=$(echo "$journalctl_output" | grep -oP 'Freed [\d.]+ \K\w+' | head -1)
+        if [ -n "$freed_space" ] && [ -n "$freed_unit" ]; then
+            if [ "$freed_unit" = "MB" ] || [ "$freed_unit" = "M" ]; then
+                if command -v bc >/dev/null 2>&1; then
+                    freed_kb=$(echo "$freed_space * 1024" | bc | cut -d. -f1)
+                else
+                    freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024}")
+                fi
+            elif [ "$freed_unit" = "GB" ] || [ "$freed_unit" = "G" ]; then
+                if command -v bc >/dev/null 2>&1; then
+                    freed_kb=$(echo "$freed_space * 1024 * 1024" | bc | cut -d. -f1)
+                else
+                    freed_kb=$(awk "BEGIN {printf \"%.0f\", $freed_space * 1024 * 1024}")
+                fi
+            else
+                freed_kb=${freed_space}
+            fi
+            if [ -n "$freed_kb" ] && [ "$freed_kb" -gt 0 ] 2>/dev/null; then
+                add_cleaned_space "$freed_kb"
+                echo "OK (freed: ${freed_space} ${freed_unit})"
+            else
+                echo "OK"
+            fi
+        else
+            echo "OK"
+        fi
+        TASKS_SUCCESS+=("Journalctl logs")
+    else
+        echo "FAIL"
+        TASKS_FAILED+=("Journalctl logs")
+        FINAL_STATUS='FAILED'
+    fi
+fi
 
-run_task "APT cache" \
-    "apt-get clean" \
-    "$CLEAN_APT_CACHE"
+if [ "$CLEAN_APT_CACHE" = "TRUE" ] || [ "$CLEAN_APT_CACHE" = "true" ]; then
+    echo -n "[$(date)] : APT cache... "
+    apt_cache_dirs="/var/cache/apt/archives /var/cache/apt/archives/partial"
+    before_kb=0
+    for dir in $apt_cache_dirs; do
+        if [ -d "$dir" ]; then
+            dir_size=$(du -sk "$dir" 2>/dev/null | cut -f1)
+            [ -n "$dir_size" ] && before_kb=$((before_kb + dir_size))
+        fi
+    done
+    if apt-get clean >/dev/null 2>&1; then
+        after_kb=0
+        for dir in $apt_cache_dirs; do
+            if [ -d "$dir" ]; then
+                dir_size=$(du -sk "$dir" 2>/dev/null | cut -f1)
+                [ -n "$dir_size" ] && after_kb=$((after_kb + dir_size))
+            fi
+        done
+        cleaned_kb=$((before_kb - after_kb))
+        if [ "$cleaned_kb" -gt 0 ]; then
+            add_cleaned_space "$cleaned_kb"
+            cleaned_formatted=$(convert_space $cleaned_kb)
+            echo "OK (freed: $cleaned_formatted)"
+        else
+            echo "OK"
+        fi
+        TASKS_SUCCESS+=("APT cache")
+    else
+        echo "FAIL"
+        TASKS_FAILED+=("APT cache")
+        FINAL_STATUS='FAILED'
+    fi
+fi
 
 run_task "Old kernel packages" \
     "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y" \
@@ -220,56 +333,160 @@ run_task "Thumbnail cache" \
     "rm -rf /home/*/.cache/thumbnails/* 2>/dev/null; true" \
     "$CLEAN_THUMBNAIL_CACHE"
 
-run_task "Temp files (>${TEMP_FILES_RETENTION_DAYS}d)" \
-    "find /tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null; find /var/tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null; true" \
-    "$CLEAN_TEMP_FILES"
+if [ "$CLEAN_TEMP_FILES" = "TRUE" ] || [ "$CLEAN_TEMP_FILES" = "true" ]; then
+    echo -n "[$(date)] : Temp files (>${TEMP_FILES_RETENTION_DAYS}d)... "
+    before_kb=0
+    for tmp_dir in /tmp /var/tmp; do
+        if [ -d "$tmp_dir" ]; then
+            dir_size=$(du -sk "$tmp_dir" 2>/dev/null | cut -f1)
+            [ -n "$dir_size" ] && before_kb=$((before_kb + dir_size))
+        fi
+    done
+    find /tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null
+    find /var/tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null
+    after_kb=0
+    for tmp_dir in /tmp /var/tmp; do
+        if [ -d "$tmp_dir" ]; then
+            dir_size=$(du -sk "$tmp_dir" 2>/dev/null | cut -f1)
+            [ -n "$dir_size" ] && after_kb=$((after_kb + dir_size))
+        fi
+    done
+    cleaned_kb=$((before_kb - after_kb))
+    if [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Temp files")
+fi
 
-run_task "PHP sessions (>${PHP_SESSIONS_RETENTION_DAYS}d)" \
-    "find /var/lib/php/sessions -type f -mtime +${PHP_SESSIONS_RETENTION_DAYS} -delete 2>/dev/null; true" \
-    "$CLEAN_PHP_SESSIONS"
+if [ "$CLEAN_PHP_SESSIONS" = "TRUE" ] || [ "$CLEAN_PHP_SESSIONS" = "true" ]; then
+    echo -n "[$(date)] : PHP sessions (>${PHP_SESSIONS_RETENTION_DAYS}d)... "
+    if [ -d "/var/lib/php/sessions" ]; then
+        before_kb=$(measure_cleanup "/var/lib/php/sessions")
+        find /var/lib/php/sessions -type f -mtime +${PHP_SESSIONS_RETENTION_DAYS} -delete 2>/dev/null
+        after_kb=$(measure_cleanup "/var/lib/php/sessions")
+        cleaned_kb=$((before_kb - after_kb))
+        if [ "$cleaned_kb" -gt 0 ]; then
+            add_cleaned_space "$cleaned_kb"
+            cleaned_formatted=$(convert_space $cleaned_kb)
+            echo "OK (freed: $cleaned_formatted)"
+        else
+            echo "OK"
+        fi
+    else
+        echo "OK (no sessions dir)"
+    fi
+    TASKS_SUCCESS+=("PHP sessions")
+fi
 
 echo ""
 echo "--- SERVICE LOGS CLEANUP (>${SERVICE_LOGS_RETENTION_DAYS}d) ---"
 
-run_task "Nginx logs" \
-    "clean_rotated_logs /var/log/nginx ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_NGINX_LOGS"
+if [ "$CLEAN_NGINX_LOGS" = "TRUE" ] || [ "$CLEAN_NGINX_LOGS" = "true" ]; then
+    echo -n "[$(date)] : Nginx logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/nginx ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Nginx logs")
+fi
 
-run_task "Apache logs" \
-    "clean_rotated_logs /var/log/apache2 ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_APACHE_LOGS"
+if [ "$CLEAN_APACHE_LOGS" = "TRUE" ] || [ "$CLEAN_APACHE_LOGS" = "true" ]; then
+    echo -n "[$(date)] : Apache logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/apache2 ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Apache logs")
+fi
 
-run_task "Exim4 logs" \
-    "clean_rotated_logs /var/log/exim4 ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_EXIM_LOGS"
+if [ "$CLEAN_EXIM_LOGS" = "TRUE" ] || [ "$CLEAN_EXIM_LOGS" = "true" ]; then
+    echo -n "[$(date)] : Exim4 logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/exim4 ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Exim4 logs")
+fi
 
 run_task "Dovecot logs" \
     "find /var/log -maxdepth 1 -name 'dovecot*' -type f -mtime +${SERVICE_LOGS_RETENTION_DAYS} -delete 2>/dev/null; true" \
     "$CLEAN_DOVECOT_LOGS"
 
-run_task "ClamAV logs" \
-    "clean_rotated_logs /var/log/clamav ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_CLAMAV_LOGS"
+if [ "$CLEAN_CLAMAV_LOGS" = "TRUE" ] || [ "$CLEAN_CLAMAV_LOGS" = "true" ]; then
+    echo -n "[$(date)] : ClamAV logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/clamav ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("ClamAV logs")
+fi
 
-run_task "Roundcube logs" \
-    "clean_rotated_logs /var/log/roundcube ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_ROUNDCUBE_LOGS"
+if [ "$CLEAN_ROUNDCUBE_LOGS" = "TRUE" ] || [ "$CLEAN_ROUNDCUBE_LOGS" = "true" ]; then
+    echo -n "[$(date)] : Roundcube logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/roundcube ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("Roundcube logs")
+fi
 
 run_task "Fail2ban logs" \
     "find /var/log -maxdepth 1 -name 'fail2ban*' -type f -mtime +${SERVICE_LOGS_RETENTION_DAYS} -delete 2>/dev/null; true" \
     "$CLEAN_FAIL2BAN_LOGS"
 
-run_task "HestiaCP logs" \
-    "clean_rotated_logs /var/log/hestia ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_HESTIA_LOGS"
+if [ "$CLEAN_HESTIA_LOGS" = "TRUE" ] || [ "$CLEAN_HESTIA_LOGS" = "true" ]; then
+    echo -n "[$(date)] : HestiaCP logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/hestia ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("HestiaCP logs")
+fi
 
 run_task "PHP-FPM logs" \
     "find /var/log -maxdepth 1 -name 'php*-fpm*' -type f -mtime +${SERVICE_LOGS_RETENTION_DAYS} -delete 2>/dev/null; true" \
     "$CLEAN_PHP_FPM_LOGS"
 
-run_task "MySQL/MariaDB logs" \
-    "clean_rotated_logs /var/log/mysql ${SERVICE_LOGS_RETENTION_DAYS}" \
-    "$CLEAN_MYSQL_LOGS"
+if [ "$CLEAN_MYSQL_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_LOGS" = "true" ]; then
+    echo -n "[$(date)] : MySQL/MariaDB logs... "
+    cleaned_kb=$(clean_rotated_logs /var/log/mysql ${SERVICE_LOGS_RETENTION_DAYS})
+    if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" -gt 0 ]; then
+        add_cleaned_space "$cleaned_kb"
+        cleaned_formatted=$(convert_space $cleaned_kb)
+        echo "OK (freed: $cleaned_formatted)"
+    else
+        echo "OK"
+    fi
+    TASKS_SUCCESS+=("MySQL/MariaDB logs")
+fi
 
 run_task "vsftpd logs" \
     "find /var/log -maxdepth 1 -name 'vsftpd*' -o -name 'xferlog*' -type f -mtime +${SERVICE_LOGS_RETENTION_DAYS} -delete 2>/dev/null; true" \
@@ -311,15 +528,26 @@ fi
 
 echo -n "[$(date)] : Large system logs (truncate >100MB)... "
 truncated_logs=0
+truncated_size_kb=0
 for large_log in /var/log/syslog /var/log/auth.log /var/log/kern.log /var/log/mail.log /var/log/cron.log /var/log/user.log; do
     if [ -f "$large_log" ]; then
         log_size=$(stat -c%s "$large_log" 2>/dev/null || echo 0)
         if [ "$log_size" -gt 104857600 ]; then
-            : > "$large_log" 2>/dev/null && truncated_logs=$((truncated_logs + 1))
+            log_size_kb=$((log_size / 1024))
+            if : > "$large_log" 2>/dev/null; then
+                truncated_logs=$((truncated_logs + 1))
+                truncated_size_kb=$((truncated_size_kb + log_size_kb))
+            fi
         fi
     fi
 done
-echo "OK ($truncated_logs truncated)"
+if [ "$truncated_size_kb" -gt 0 ]; then
+    add_cleaned_space "$truncated_size_kb"
+    truncated_formatted=$(convert_space $truncated_size_kb)
+    echo "OK ($truncated_logs truncated, freed: $truncated_formatted)"
+else
+    echo "OK ($truncated_logs truncated)"
+fi
 TASKS_SUCCESS+=("Large system logs")
 
 if [ "$CLEAN_CORE_DUMPS" = "TRUE" ] || [ "$CLEAN_CORE_DUMPS" = "true" ]; then
@@ -431,17 +659,22 @@ fi
 if [ "$CLEAN_USER_TRASH" = "TRUE" ] || [ "$CLEAN_USER_TRASH" = "true" ]; then
     echo -n "[$(date)] : User trash (all users)... "
     trash_cleaned=0
-    trash_size=0
+    trash_size_kb=0
     for trash_dir in /home/*/.local/share/Trash /root/.local/share/Trash; do
         if [ -d "$trash_dir" ]; then
             size_before=$(du -sk "$trash_dir" 2>/dev/null | cut -f1)
             rm -rf "$trash_dir/files/"* "$trash_dir/info/"* 2>/dev/null
-            [ -n "$size_before" ] && trash_size=$((trash_size + size_before))
+            [ -n "$size_before" ] && trash_size_kb=$((trash_size_kb + size_before))
             trash_cleaned=$((trash_cleaned + 1))
         fi
     done
-    trash_mb=$((trash_size / 1024))
-    echo "OK ($trash_cleaned users, ${trash_mb}MB freed)"
+    if [ "$trash_size_kb" -gt 0 ]; then
+        add_cleaned_space "$trash_size_kb"
+        trash_formatted=$(convert_space $trash_size_kb)
+        echo "OK ($trash_cleaned users, freed: $trash_formatted)"
+    else
+        echo "OK ($trash_cleaned users)"
+    fi
     TASKS_SUCCESS+=("User trash cleanup")
 fi
 
@@ -597,22 +830,28 @@ run_task "SSD TRIM" \
 final_space_kb=$(df / | tail -1 | awk '{ print $4 }')
 final_space_formatted=$(convert_space $final_space_kb)
 
-cleaned_space_kb=$((final_space_kb - initial_space_kb))
-if [ "$cleaned_space_kb" -gt 0 ]; then
-cleaned_space_formatted=$(convert_space $cleaned_space_kb)
-elif [ "$cleaned_space_kb" -lt 0 ]; then
-    cleaned_space_kb=$((-cleaned_space_kb))
-    cleaned_space_formatted="-$(convert_space $cleaned_space_kb)"
+df_cleaned_space_kb=$((final_space_kb - initial_space_kb))
+if [ "$df_cleaned_space_kb" -lt 0 ]; then
+    df_cleaned_space_kb=0
+fi
+df_cleaned_space_formatted=$(convert_space $df_cleaned_space_kb)
+
+if [ "$TOTAL_CLEANED_KB" -gt 0 ]; then
+    cleaned_space_formatted=$(convert_space $TOTAL_CLEANED_KB)
 else
-    cleaned_space_formatted="0 MB"
+    cleaned_space_formatted=$df_cleaned_space_formatted
+    TOTAL_CLEANED_KB=$df_cleaned_space_kb
 fi
 
 echo ""
 echo "=========================================="
 echo "Cleanup completed: $FINAL_STATUS"
-echo "Initial: $initial_space_formatted"
-echo "Final: $final_space_formatted"
-echo "Cleaned: $cleaned_space_formatted"
+echo "Initial Available: $initial_space_formatted"
+echo "Final Available: $final_space_formatted"
+echo "Space Cleaned (measured): $cleaned_space_formatted"
+if [ "$TOTAL_CLEANED_KB" -gt 0 ] && [ "$df_cleaned_space_kb" -gt 0 ] && [ "$TOTAL_CLEANED_KB" != "$df_cleaned_space_kb" ]; then
+    echo "Space Cleaned (df diff): $df_cleaned_space_formatted"
+fi
 echo "Tasks: ${#TASKS_SUCCESS[@]} OK, ${#TASKS_FAILED[@]} FAIL, ${#TASKS_SKIPPED[@]} SKIP"
 echo "=========================================="
 
@@ -623,6 +862,8 @@ send_html_email() {
     
     local hostname=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "HestiaCP Server")
     local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    
+    local email_cleaned_formatted=$(convert_space $TOTAL_CLEANED_KB)
     
     if [ "$status" = "SUCCESS" ]; then
         local subject="Clean Garbage Report - $hostname - SUCCESS"
@@ -685,7 +926,7 @@ send_html_email() {
         </td>
         <td style=\"padding:10px; text-align:center; width:25%;\">
           <div style=\"font-size:11px; color:#A0A0A0; margin-bottom:4px;\">Cleaned</div>
-          <div style=\"font-size:14px; color:#4CAF50; font-weight:bold;\">${cleaned_space_formatted}</div>
+          <div style=\"font-size:14px; color:#4CAF50; font-weight:bold;\">${email_cleaned_formatted}</div>
         </td>
       </tr>
     </table>
