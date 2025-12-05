@@ -19,6 +19,9 @@ COMPOSER_CACHE_RETENTION_DAYS=30
 PHP_SESSIONS_RETENTION_DAYS=1
 MAIL_QUEUE_RETENTION_DAYS=7
 SPAM_MAIL_RETENTION_DAYS=30
+CORE_DUMPS_RETENTION_DAYS=1
+LOCK_FILES_RETENTION_DAYS=1
+BACKUP_FILES_RETENTION_DAYS=30
 
 #------------------------------------------
 # SYSTEM CLEANUPS (TRUE/FALSE)
@@ -29,6 +32,10 @@ CLEAN_TEMP_FILES="TRUE"
 CLEAN_OLD_KERNELS="TRUE"
 CLEAN_THUMBNAIL_CACHE="TRUE"
 CLEAN_PHP_SESSIONS="TRUE"
+CLEAN_CORE_DUMPS="TRUE"
+CLEAN_LOCK_FILES="TRUE"
+CLEAN_EDITOR_TEMP="TRUE"
+CLEAN_BACKUP_FILES="TRUE"
 
 #------------------------------------------
 # SERVICE LOGS CLEANUP (TRUE/FALSE)
@@ -49,6 +56,8 @@ CLEAN_CLOUD_INIT_LOGS="TRUE"
 CLEAN_UNATTENDED_UPGRADES_LOGS="TRUE"
 CLEAN_BTMP_WTMP="TRUE"
 CLEAN_ROTATED_LOGS="TRUE"
+CLEAN_MYSQL_SLOW_LOGS="TRUE"
+CLEAN_MYSQL_BINARY_LOGS="FALSE"
 
 #------------------------------------------
 # USER CACHE CLEANUP (TRUE/FALSE)
@@ -312,6 +321,81 @@ for large_log in /var/log/syslog /var/log/auth.log /var/log/kern.log /var/log/ma
 done
 echo "OK ($truncated_logs truncated)"
 TASKS_SUCCESS+=("Large system logs")
+
+if [ "$CLEAN_CORE_DUMPS" = "TRUE" ] || [ "$CLEAN_CORE_DUMPS" = "true" ]; then
+    echo -n "[$(date)] : Core dumps (>${CORE_DUMPS_RETENTION_DAYS}d)... "
+    core_count=$(find / -name "core" -o -name "core.*" -type f -mtime +${CORE_DUMPS_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
+    echo "OK ($core_count deleted)"
+    TASKS_SUCCESS+=("Core dumps cleanup")
+fi
+
+if [ "$CLEAN_LOCK_FILES" = "TRUE" ] || [ "$CLEAN_LOCK_FILES" = "true" ]; then
+    echo -n "[$(date)] : Old lock files (>${LOCK_FILES_RETENTION_DAYS}d)... "
+    lock_count=0
+    for lock_dir in /var/lock /var/run /tmp /var/tmp; do
+        if [ -d "$lock_dir" ]; then
+            count=$(find "$lock_dir" -name "*.lock" -type f -mtime +${LOCK_FILES_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
+            lock_count=$((lock_count + count))
+        fi
+    done
+    echo "OK ($lock_count deleted)"
+    TASKS_SUCCESS+=("Lock files cleanup")
+fi
+
+if [ "$CLEAN_EDITOR_TEMP" = "TRUE" ] || [ "$CLEAN_EDITOR_TEMP" = "true" ]; then
+    echo -n "[$(date)] : Editor temp files... "
+    editor_count=0
+    for temp_pattern in "*.swp" "*.swo" "*.swn" "*~" ".DS_Store" "Thumbs.db"; do
+        count=$(find /home /tmp /var/tmp -name "$temp_pattern" -type f -delete 2>/dev/null -print | wc -l)
+        editor_count=$((editor_count + count))
+    done
+    echo "OK ($editor_count deleted)"
+    TASKS_SUCCESS+=("Editor temp files")
+fi
+
+if [ "$CLEAN_BACKUP_FILES" = "TRUE" ] || [ "$CLEAN_BACKUP_FILES" = "true" ]; then
+    echo -n "[$(date)] : Backup files (.bak/.old/.orig >${BACKUP_FILES_RETENTION_DAYS}d)... "
+    backup_count=0
+    for backup_pattern in "*.bak" "*.old" "*.orig" "*.save"; do
+        count=$(find /home /tmp /var/tmp -name "$backup_pattern" -type f -mtime +${BACKUP_FILES_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
+        backup_count=$((backup_count + count))
+    done
+    echo "OK ($backup_count deleted)"
+    TASKS_SUCCESS+=("Backup files cleanup")
+fi
+
+if [ -n "$DB_CMD" ]; then
+    if [ "$CLEAN_MYSQL_SLOW_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_SLOW_LOGS" = "true" ]; then
+        echo -n "[$(date)] : MySQL slow query logs (>${SERVICE_LOGS_RETENTION_DAYS}d)... "
+        slow_logs_deleted=0
+        slow_log_path=$($DB_CMD -N -e "SHOW VARIABLES LIKE 'slow_query_log_file';" 2>/dev/null | awk '{print $2}')
+        if [ -n "$slow_log_path" ] && [ "$slow_log_path" != "NULL" ] && [ -f "$slow_log_path" ]; then
+            slow_log_size=$(stat -c%s "$slow_log_path" 2>/dev/null || echo 0)
+            if [ "$slow_log_size" -gt 10485760 ]; then
+                : > "$slow_log_path" 2>/dev/null && slow_logs_deleted=1
+            fi
+        fi
+        find /var/log -name "*slow*" -type f -mtime +${SERVICE_LOGS_RETENTION_DAYS} -delete 2>/dev/null
+        echo "OK ($slow_logs_deleted truncated)"
+        TASKS_SUCCESS+=("MySQL slow logs")
+    fi
+
+    if [ "$CLEAN_MYSQL_BINARY_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_BINARY_LOGS" = "true" ]; then
+        echo -n "[$(date)] : MySQL binary logs (older than 7 days)... "
+        binary_logs_deleted=0
+        if $DB_CMD -N -e "SHOW VARIABLES LIKE 'log_bin';" 2>/dev/null | grep -q "ON"; then
+            binary_log_dir=$($DB_CMD -N -e "SHOW VARIABLES LIKE 'datadir';" 2>/dev/null | awk '{print $2}')
+            if [ -n "$binary_log_dir" ] && [ -d "$binary_log_dir" ]; then
+                $DB_CMD -e "PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 7 DAY);" 2>/dev/null && binary_logs_deleted=1
+            fi
+        fi
+        echo "OK ($binary_logs_deleted purged)"
+        TASKS_SUCCESS+=("MySQL binary logs")
+    fi
+else
+    [ "$CLEAN_MYSQL_SLOW_LOGS" = "TRUE" ] && TASKS_SKIPPED+=("MySQL slow logs")
+    [ "$CLEAN_MYSQL_BINARY_LOGS" = "TRUE" ] && TASKS_SKIPPED+=("MySQL binary logs")
+fi
 
 echo ""
 echo "--- USER CACHE CLEANUP ---"
