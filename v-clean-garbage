@@ -15,7 +15,6 @@ ADMIN_EMAIL_OVERRIDE=""
 # RETENTION PERIODS (days)
 #------------------------------------------
 JOURNALCTL_RETENTION_DAYS=7
-TEMP_FILES_RETENTION_DAYS=7
 SERVICE_LOGS_RETENTION_DAYS=30
 PHP_SESSIONS_RETENTION_DAYS=1
 CORE_DUMPS_RETENTION_DAYS=1
@@ -25,7 +24,7 @@ LOCK_FILES_RETENTION_DAYS=1
 # MAIL RETENTION PERIODS
 # Options: 1M (1 month), 1Y (1 year), 5Y (5 years)
 #------------------------------------------
-MAIL_QUEUE_RETENTION="1Y"
+MAIL_QUEUE_RETENTION="5Y"
 SPAM_MAIL_RETENTION="1Y"
 USER_TRASH_RETENTION="1Y"
 
@@ -34,7 +33,6 @@ USER_TRASH_RETENTION="1Y"
 #------------------------------------------
 CLEAN_JOURNALCTL="TRUE"
 CLEAN_APT_CACHE="TRUE"
-CLEAN_TEMP_FILES="TRUE"
 CLEAN_OLD_KERNELS="TRUE"
 CLEAN_PHP_SESSIONS="TRUE"
 CLEAN_CORE_DUMPS="TRUE"
@@ -242,14 +240,16 @@ clean_rotated_logs() {
         if [ -f "$logfile" ]; then
             local log_size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
             if [ -n "$log_size" ] && [ "$log_size" -gt 104857600 ] 2>/dev/null; then
-                local log_size_kb=$((log_size / 1024))
-                truncated_size_kb=$((truncated_size_kb + log_size_kb))
+                if ! lsof "$logfile" >/dev/null 2>&1; then
+                    local log_size_kb=$((log_size / 1024))
+                    truncated_size_kb=$((truncated_size_kb + log_size_kb))
+                fi
             fi
         fi
-    done < <(find "$log_dir" -type f -name "*.log" -size +100M -print0 2>/dev/null)
+    done < <(find "$log_dir" -maxdepth 1 -type f -name "*.log" -size +100M -print0 2>/dev/null)
     
-    find "$log_dir" -type f \( -name "*.log.*" -o -name "*.gz" -o -name "*.[0-9]" \) -mtime +${days} -delete 2>/dev/null
-    find "$log_dir" -type f -name "*.log" -size +100M -exec truncate -s 0 {} \; 2>/dev/null
+    find "$log_dir" -maxdepth 1 -type f \( -name "*.log.[0-9]*" -o -name "*.log.*.gz" -o -name "*.[0-9].gz" \) -mtime +${days} -delete 2>/dev/null
+    find "$log_dir" -maxdepth 1 -type f -name "*.log" -size +100M ! -exec lsof {} \; -exec truncate -s 0 {} \; 2>/dev/null
     
     local after_kb=$(measure_cleanup "$log_dir")
     after_kb=${after_kb:-0}
@@ -385,35 +385,6 @@ if [ "$CLEAN_OLD_KERNELS" = "TRUE" ] || [ "$CLEAN_OLD_KERNELS" = "true" ]; then
         TASKS_FAILED+=("Old kernel packages")
         FINAL_STATUS='FAILED'
     fi
-fi
-
-if [ "$CLEAN_TEMP_FILES" = "TRUE" ] || [ "$CLEAN_TEMP_FILES" = "true" ]; then
-    echo -n "[$(date)] : Temp files (>${TEMP_FILES_RETENTION_DAYS}d)... "
-    before_kb=0
-    for tmp_dir in /tmp /var/tmp; do
-        if [ -d "$tmp_dir" ]; then
-            dir_size=$(du -sk "$tmp_dir" 2>/dev/null | cut -f1)
-            [ -n "$dir_size" ] && before_kb=$((before_kb + dir_size))
-        fi
-    done
-    find /tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null
-    find /var/tmp -type f -atime +${TEMP_FILES_RETENTION_DAYS} -delete 2>/dev/null
-    after_kb=0
-    for tmp_dir in /tmp /var/tmp; do
-        if [ -d "$tmp_dir" ]; then
-            dir_size=$(du -sk "$tmp_dir" 2>/dev/null | cut -f1)
-            [ -n "$dir_size" ] && after_kb=$((after_kb + dir_size))
-        fi
-    done
-    cleaned_kb=$((before_kb - after_kb))
-    if [ "$cleaned_kb" -gt 0 ]; then
-        add_cleaned_space "$cleaned_kb"
-        cleaned_formatted=$(convert_space $cleaned_kb)
-        echo "OK (freed: $cleaned_formatted)"
-    else
-        echo "OK"
-    fi
-    TASKS_SUCCESS+=("Temp files")
 fi
 
 if [ "$CLEAN_PHP_SESSIONS" = "TRUE" ] || [ "$CLEAN_PHP_SESSIONS" = "true" ]; then
@@ -613,7 +584,13 @@ TASKS_SUCCESS+=("Large system logs")
 
 if [ "$CLEAN_CORE_DUMPS" = "TRUE" ] || [ "$CLEAN_CORE_DUMPS" = "true" ]; then
     echo -n "[$(date)] : Core dumps (>${CORE_DUMPS_RETENTION_DAYS}d)... "
-    core_count=$(find / -name "core" -o -name "core.*" -type f -mtime +${CORE_DUMPS_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
+    core_count=0
+    for core_dir in /var/crash /var/tmp /tmp /usr/src; do
+        if [ -d "$core_dir" ]; then
+            count=$(find "$core_dir" \( -name "core" -o -name "core.*" \) -type f -mtime +${CORE_DUMPS_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
+            core_count=$((core_count + count))
+        fi
+    done
     echo "OK ($core_count deleted)"
     TASKS_SUCCESS+=("Core dumps cleanup")
 fi
