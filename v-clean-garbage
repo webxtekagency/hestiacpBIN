@@ -1,6 +1,10 @@
 #!/bin/bash
 
 #==========================================
+# HESTIACP SYSTEM CLEANUP SCRIPT
+# Only cleans system logs and system-level garbage
+# Does NOT modify user data, databases, or user files
+#==========================================
 # CONFIGURATION - Edit these as needed
 #==========================================
 
@@ -12,16 +16,18 @@ ADMIN_EMAIL_OVERRIDE=""
 #------------------------------------------
 JOURNALCTL_RETENTION_DAYS=7
 TEMP_FILES_RETENTION_DAYS=7
-WP_LOGS_RETENTION_DAYS=30
 SERVICE_LOGS_RETENTION_DAYS=30
-NPM_CACHE_RETENTION_DAYS=30
-COMPOSER_CACHE_RETENTION_DAYS=30
 PHP_SESSIONS_RETENTION_DAYS=1
-MAIL_QUEUE_RETENTION_DAYS=7
-SPAM_MAIL_RETENTION_DAYS=30
 CORE_DUMPS_RETENTION_DAYS=1
 LOCK_FILES_RETENTION_DAYS=1
-BACKUP_FILES_RETENTION_DAYS=30
+
+#------------------------------------------
+# MAIL RETENTION PERIODS
+# Options: 1M (1 month), 1Y (1 year), 5Y (5 years)
+#------------------------------------------
+MAIL_QUEUE_RETENTION="1Y"
+SPAM_MAIL_RETENTION="1Y"
+USER_TRASH_RETENTION="1Y"
 
 #------------------------------------------
 # SYSTEM CLEANUPS (TRUE/FALSE)
@@ -30,12 +36,9 @@ CLEAN_JOURNALCTL="TRUE"
 CLEAN_APT_CACHE="TRUE"
 CLEAN_TEMP_FILES="TRUE"
 CLEAN_OLD_KERNELS="TRUE"
-CLEAN_THUMBNAIL_CACHE="TRUE"
 CLEAN_PHP_SESSIONS="TRUE"
 CLEAN_CORE_DUMPS="TRUE"
 CLEAN_LOCK_FILES="TRUE"
-CLEAN_EDITOR_TEMP="TRUE"
-CLEAN_BACKUP_FILES="TRUE"
 
 #------------------------------------------
 # SERVICE LOGS CLEANUP (TRUE/FALSE)
@@ -57,14 +60,6 @@ CLEAN_UNATTENDED_UPGRADES_LOGS="TRUE"
 CLEAN_BTMP_WTMP="TRUE"
 CLEAN_ROTATED_LOGS="TRUE"
 CLEAN_MYSQL_SLOW_LOGS="TRUE"
-CLEAN_MYSQL_BINARY_LOGS="FALSE"
-
-#------------------------------------------
-# USER CACHE CLEANUP (TRUE/FALSE)
-#------------------------------------------
-CLEAN_NPM_CACHE="TRUE"
-CLEAN_COMPOSER_CACHE="TRUE"
-CLEAN_USER_TRASH="TRUE"
 
 #------------------------------------------
 # MAIL CLEANUP (TRUE/FALSE)
@@ -73,14 +68,9 @@ CLEAN_MAIL_QUEUE="TRUE"
 CLEAN_SPAM_MAIL="TRUE"
 
 #------------------------------------------
-# WORDPRESS CLEANUP (TRUE/FALSE)
+# USER CLEANUP (TRUE/FALSE)
 #------------------------------------------
-CLEAN_WP_LOGS="TRUE"
-CLEAN_WP_DEBUG_TABLES="TRUE"
-CLEAN_WP_REVISIONS="TRUE"
-CLEAN_WP_TRANSIENTS="TRUE"
-CLEAN_WP_SPAM_COMMENTS="TRUE"
-WP_REVISIONS_TO_KEEP=5
+CLEAN_USER_TRASH="TRUE"
 
 #------------------------------------------
 # SSD TRIM (only enable if you have SSD)
@@ -183,6 +173,35 @@ add_cleaned_space() {
     if [ -n "$cleaned_kb" ] && [ "$cleaned_kb" != "" ] && [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
         TOTAL_CLEANED_KB=$((TOTAL_CLEANED_KB + cleaned_kb))
     fi
+}
+
+convert_retention_to_days() {
+    local retention="$1"
+    local days=0
+    
+    if [ -z "$retention" ]; then
+        echo "365"
+        return
+    fi
+    
+    retention=$(echo "$retention" | tr '[:lower:]' '[:upper:]')
+    
+    if echo "$retention" | grep -qE '^[0-9]+[MY]$'; then
+        local number=$(echo "$retention" | sed 's/[^0-9]//g')
+        local unit=$(echo "$retention" | sed 's/[^MY]//g')
+        
+        if [ "$unit" = "M" ]; then
+            days=$((number * 30))
+        elif [ "$unit" = "Y" ]; then
+            days=$((number * 365))
+        fi
+    elif echo "$retention" | grep -qE '^[0-9]+$'; then
+        days=$retention
+    else
+        days=365
+    fi
+    
+    echo "$days"
 }
 
 run_task() {
@@ -366,36 +385,6 @@ if [ "$CLEAN_OLD_KERNELS" = "TRUE" ] || [ "$CLEAN_OLD_KERNELS" = "true" ]; then
         TASKS_FAILED+=("Old kernel packages")
         FINAL_STATUS='FAILED'
     fi
-fi
-
-if [ "$CLEAN_THUMBNAIL_CACHE" = "TRUE" ] || [ "$CLEAN_THUMBNAIL_CACHE" = "true" ]; then
-    echo -n "[$(date)] : Thumbnail cache... "
-    thumbnail_dirs="/home/*/.cache/thumbnails /root/.cache/thumbnails"
-    before_kb=0
-    for thumb_dir in $thumbnail_dirs; do
-        if [ -d "$thumb_dir" ]; then
-            dir_size=$(du -sk "$thumb_dir" 2>/dev/null | cut -f1)
-            [ -n "$dir_size" ] && before_kb=$((before_kb + dir_size))
-        fi
-    done
-    rm -rf /home/*/.cache/thumbnails/* /root/.cache/thumbnails/* 2>/dev/null
-    after_kb=0
-    for thumb_dir in $thumbnail_dirs; do
-        if [ -d "$thumb_dir" ]; then
-            dir_size=$(du -sk "$thumb_dir" 2>/dev/null | cut -f1)
-            [ -n "$dir_size" ] && after_kb=$((after_kb + dir_size))
-        fi
-    done
-    cleaned_kb=$((before_kb - after_kb))
-    [ "$cleaned_kb" -lt 0 ] && cleaned_kb=0
-    if [ "$cleaned_kb" -gt 0 ] 2>/dev/null; then
-        add_cleaned_space "$cleaned_kb"
-        cleaned_formatted=$(convert_space $cleaned_kb)
-        echo "OK (freed: $cleaned_formatted)"
-    else
-        echo "OK"
-    fi
-    TASKS_SUCCESS+=("Thumbnail cache")
 fi
 
 if [ "$CLEAN_TEMP_FILES" = "TRUE" ] || [ "$CLEAN_TEMP_FILES" = "true" ]; then
@@ -642,28 +631,6 @@ if [ "$CLEAN_LOCK_FILES" = "TRUE" ] || [ "$CLEAN_LOCK_FILES" = "true" ]; then
     TASKS_SUCCESS+=("Lock files cleanup")
 fi
 
-if [ "$CLEAN_EDITOR_TEMP" = "TRUE" ] || [ "$CLEAN_EDITOR_TEMP" = "true" ]; then
-    echo -n "[$(date)] : Editor temp files... "
-    editor_count=0
-    for temp_pattern in "*.swp" "*.swo" "*.swn" "*~" ".DS_Store" "Thumbs.db"; do
-        count=$(find /home /tmp /var/tmp -name "$temp_pattern" -type f -delete 2>/dev/null -print | wc -l)
-        editor_count=$((editor_count + count))
-    done
-    echo "OK ($editor_count deleted)"
-    TASKS_SUCCESS+=("Editor temp files")
-fi
-
-if [ "$CLEAN_BACKUP_FILES" = "TRUE" ] || [ "$CLEAN_BACKUP_FILES" = "true" ]; then
-    echo -n "[$(date)] : Backup files (.bak/.old/.orig >${BACKUP_FILES_RETENTION_DAYS}d)... "
-    backup_count=0
-    for backup_pattern in "*.bak" "*.old" "*.orig" "*.save"; do
-        count=$(find /home /tmp /var/tmp -name "$backup_pattern" -type f -mtime +${BACKUP_FILES_RETENTION_DAYS} -delete 2>/dev/null -print | wc -l)
-        backup_count=$((backup_count + count))
-    done
-    echo "OK ($backup_count deleted)"
-    TASKS_SUCCESS+=("Backup files cleanup")
-fi
-
 if [ -n "$DB_CMD" ]; then
     if [ "$CLEAN_MYSQL_SLOW_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_SLOW_LOGS" = "true" ]; then
         echo -n "[$(date)] : MySQL slow query logs (>${SERVICE_LOGS_RETENTION_DAYS}d)... "
@@ -679,79 +646,15 @@ if [ -n "$DB_CMD" ]; then
         echo "OK ($slow_logs_deleted truncated)"
         TASKS_SUCCESS+=("MySQL slow logs")
     fi
-
-    if [ "$CLEAN_MYSQL_BINARY_LOGS" = "TRUE" ] || [ "$CLEAN_MYSQL_BINARY_LOGS" = "true" ]; then
-        echo -n "[$(date)] : MySQL binary logs (older than 7 days)... "
-        binary_logs_deleted=0
-        if $DB_CMD -N -e "SHOW VARIABLES LIKE 'log_bin';" 2>/dev/null | grep -q "ON"; then
-            binary_log_dir=$($DB_CMD -N -e "SHOW VARIABLES LIKE 'datadir';" 2>/dev/null | awk '{print $2}')
-            if [ -n "$binary_log_dir" ] && [ -d "$binary_log_dir" ]; then
-                $DB_CMD -e "PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 7 DAY);" 2>/dev/null && binary_logs_deleted=1
-            fi
-        fi
-        echo "OK ($binary_logs_deleted purged)"
-        TASKS_SUCCESS+=("MySQL binary logs")
-    fi
 else
     [ "$CLEAN_MYSQL_SLOW_LOGS" = "TRUE" ] && TASKS_SKIPPED+=("MySQL slow logs")
-    [ "$CLEAN_MYSQL_BINARY_LOGS" = "TRUE" ] && TASKS_SKIPPED+=("MySQL binary logs")
-fi
-
-echo ""
-echo "--- USER CACHE CLEANUP ---"
-
-if [ "$CLEAN_NPM_CACHE" = "TRUE" ] || [ "$CLEAN_NPM_CACHE" = "true" ]; then
-    echo -n "[$(date)] : NPM cache (>${NPM_CACHE_RETENTION_DAYS}d)... "
-    npm_cleaned=0
-    for npm_cache in /home/*/.npm/_cacache; do
-        if [ -d "$npm_cache" ]; then
-            find "$npm_cache" -type f -mtime +${NPM_CACHE_RETENTION_DAYS} -delete 2>/dev/null
-            find "$npm_cache" -type d -empty -delete 2>/dev/null
-            npm_cleaned=$((npm_cleaned + 1))
-        fi
-    done
-    echo "OK ($npm_cleaned users)"
-    TASKS_SUCCESS+=("NPM cache")
-fi
-
-if [ "$CLEAN_COMPOSER_CACHE" = "TRUE" ] || [ "$CLEAN_COMPOSER_CACHE" = "true" ]; then
-    echo -n "[$(date)] : Composer cache (>${COMPOSER_CACHE_RETENTION_DAYS}d)... "
-    composer_cleaned=0
-    for composer_cache in /home/*/.composer/cache /home/*/.cache/composer; do
-        if [ -d "$composer_cache" ]; then
-            find "$composer_cache" -type f -mtime +${COMPOSER_CACHE_RETENTION_DAYS} -delete 2>/dev/null
-            find "$composer_cache" -type d -empty -delete 2>/dev/null
-            composer_cleaned=$((composer_cleaned + 1))
-        fi
-    done
-    echo "OK ($composer_cleaned users)"
-    TASKS_SUCCESS+=("Composer cache")
-fi
-
-if [ "$CLEAN_USER_TRASH" = "TRUE" ] || [ "$CLEAN_USER_TRASH" = "true" ]; then
-    echo -n "[$(date)] : User trash (all users)... "
-    trash_cleaned=0
-    trash_size_kb=0
-    for trash_dir in /home/*/.local/share/Trash /root/.local/share/Trash; do
-        if [ -d "$trash_dir" ]; then
-            size_before=$(du -sk "$trash_dir" 2>/dev/null | cut -f1)
-            rm -rf "$trash_dir/files/"* "$trash_dir/info/"* 2>/dev/null
-            [ -n "$size_before" ] && trash_size_kb=$((trash_size_kb + size_before))
-            trash_cleaned=$((trash_cleaned + 1))
-        fi
-    done
-    if [ "$trash_size_kb" -gt 0 ]; then
-        add_cleaned_space "$trash_size_kb"
-        trash_formatted=$(convert_space $trash_size_kb)
-        echo "OK ($trash_cleaned users, freed: $trash_formatted)"
-    else
-        echo "OK ($trash_cleaned users)"
-    fi
-    TASKS_SUCCESS+=("User trash cleanup")
 fi
 
 echo ""
 echo "--- MAIL CLEANUP ---"
+
+MAIL_QUEUE_RETENTION_DAYS=$(convert_retention_to_days "$MAIL_QUEUE_RETENTION")
+SPAM_MAIL_RETENTION_DAYS=$(convert_retention_to_days "$SPAM_MAIL_RETENTION")
 
 if [ "$CLEAN_MAIL_QUEUE" = "TRUE" ] || [ "$CLEAN_MAIL_QUEUE" = "true" ]; then
     echo -n "[$(date)] : Mail queue frozen/old (>${MAIL_QUEUE_RETENTION_DAYS}d)... "
@@ -787,109 +690,35 @@ if [ "$CLEAN_SPAM_MAIL" = "TRUE" ] || [ "$CLEAN_SPAM_MAIL" = "true" ]; then
 fi
 
 echo ""
-echo "--- WORDPRESS CLEANUP ---"
+echo "--- USER CLEANUP ---"
 
-if [ "$CLEAN_WP_LOGS" = "TRUE" ] || [ "$CLEAN_WP_LOGS" = "true" ]; then
-    echo -n "[$(date)] : WP logs (>${WP_LOGS_RETENTION_DAYS}d)... "
-    wp_sites=0
-    for user_home in /home/*/web/*/public_html; do
-        [ -d "$user_home/wp-content" ] || continue
-        if [ -d "$user_home/wp-content/logs" ]; then
-            find "$user_home/wp-content/logs" -type f \( -name "*.txt" -o -name "*.log" \) -mtime +${WP_LOGS_RETENTION_DAYS} -delete 2>/dev/null
+USER_TRASH_RETENTION_DAYS=$(convert_retention_to_days "$USER_TRASH_RETENTION")
+
+if [ "$CLEAN_USER_TRASH" = "TRUE" ] || [ "$CLEAN_USER_TRASH" = "true" ]; then
+    echo -n "[$(date)] : User trash (>${USER_TRASH_RETENTION_DAYS}d)... "
+    trash_cleaned=0
+    trash_size_kb=0
+    for trash_dir in /home/*/.local/share/Trash /root/.local/share/Trash; do
+        if [ -d "$trash_dir/files" ]; then
+            size_before=$(du -sk "$trash_dir" 2>/dev/null | cut -f1)
+            find "$trash_dir/files" -type f -mtime +${USER_TRASH_RETENTION_DAYS} -delete 2>/dev/null
+            find "$trash_dir/info" -type f -mtime +${USER_TRASH_RETENTION_DAYS} -delete 2>/dev/null
+            find "$trash_dir" -type d -empty -delete 2>/dev/null
+            size_after=$(du -sk "$trash_dir" 2>/dev/null | cut -f1)
+            if [ -n "$size_before" ] && [ -n "$size_after" ] && [ "$size_before" -gt "$size_after" ] 2>/dev/null; then
+                trash_size_kb=$((trash_size_kb + size_before - size_after))
+            fi
+            trash_cleaned=$((trash_cleaned + 1))
         fi
-        if [ -f "$user_home/wp-content/debug.log" ]; then
-            find "$user_home/wp-content" -name "debug.log" -size +10M -delete 2>/dev/null
-        fi
-        wp_sites=$((wp_sites + 1))
     done
-    echo "OK ($wp_sites sites)"
-    TASKS_SUCCESS+=("WordPress logs")
-fi
-
-if [ -n "$DB_CMD" ]; then
-    if [ "$CLEAN_WP_DEBUG_TABLES" = "TRUE" ] || [ "$CLEAN_WP_DEBUG_TABLES" = "true" ]; then
-        echo -n "[$(date)] : WP debug tables... "
-        tables_cleaned=0
-        while read -r db_name; do
-            [ -z "$db_name" ] && continue
-            
-            if $DB_CMD -N -e "SHOW TABLES FROM \`$db_name\` LIKE '%wpmailsmtp_debug_events%';" 2>/dev/null | grep -q "wpmailsmtp"; then
-                $DB_CMD -e "TRUNCATE TABLE \`$db_name\`.wp_wpmailsmtp_debug_events;" 2>/dev/null && tables_cleaned=$((tables_cleaned + 1))
-            fi
-            
-            if $DB_CMD -N -e "SHOW TABLES FROM \`$db_name\` LIKE '%actionscheduler_logs%';" 2>/dev/null | grep -q "actionscheduler"; then
-                $DB_CMD -e "DELETE FROM \`$db_name\`.wp_actionscheduler_logs WHERE log_date_gmt < DATE_SUB(NOW(), INTERVAL 30 DAY);" 2>/dev/null && tables_cleaned=$((tables_cleaned + 1))
-            fi
-        done < <($DB_CMD -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
-        echo "OK ($tables_cleaned tables)"
-        TASKS_SUCCESS+=("WordPress debug tables")
+    if [ "$trash_size_kb" -gt 0 ]; then
+        add_cleaned_space "$trash_size_kb"
+        trash_formatted=$(convert_space $trash_size_kb)
+        echo "OK ($trash_cleaned users, freed: $trash_formatted)"
+    else
+        echo "OK ($trash_cleaned users)"
     fi
-
-    if [ "$CLEAN_WP_REVISIONS" = "TRUE" ] || [ "$CLEAN_WP_REVISIONS" = "true" ]; then
-        echo -n "[$(date)] : WP revisions (keep last $WP_REVISIONS_TO_KEEP)... "
-        revisions_deleted=0
-        while read -r db_name; do
-            [ -z "$db_name" ] && continue
-            
-            if $DB_CMD -N -e "SHOW TABLES FROM \`$db_name\` LIKE 'wp_posts';" 2>/dev/null | grep -q "wp_posts"; then
-                count=$($DB_CMD -N -e "DELETE p FROM \`$db_name\`.wp_posts p
-                    LEFT JOIN (
-                        SELECT ID FROM \`$db_name\`.wp_posts 
-                        WHERE post_type = 'revision'
-                        ORDER BY post_date DESC
-                        LIMIT $WP_REVISIONS_TO_KEEP
-                    ) keep ON p.ID = keep.ID
-                    WHERE p.post_type = 'revision' AND keep.ID IS NULL;
-                    SELECT ROW_COUNT();" 2>/dev/null | tail -1)
-                [ -n "$count" ] && revisions_deleted=$((revisions_deleted + count))
-            fi
-        done < <($DB_CMD -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
-        echo "OK ($revisions_deleted deleted)"
-        TASKS_SUCCESS+=("WordPress revisions")
-    fi
-
-    if [ "$CLEAN_WP_TRANSIENTS" = "TRUE" ] || [ "$CLEAN_WP_TRANSIENTS" = "true" ]; then
-        echo -n "[$(date)] : WP expired transients... "
-        transients_deleted=0
-        while read -r db_name; do
-            [ -z "$db_name" ] && continue
-            
-            if $DB_CMD -N -e "SHOW TABLES FROM \`$db_name\` LIKE 'wp_options';" 2>/dev/null | grep -q "wp_options"; then
-                count=$($DB_CMD -N -e "DELETE FROM \`$db_name\`.wp_options WHERE option_name LIKE '%_transient_timeout_%' AND option_value < UNIX_TIMESTAMP();
-                    SELECT ROW_COUNT();" 2>/dev/null | tail -1)
-                [ -n "$count" ] && transients_deleted=$((transients_deleted + count))
-                
-                $DB_CMD -e "DELETE FROM \`$db_name\`.wp_options WHERE option_name LIKE '%_transient_%' AND option_name NOT LIKE '%_transient_timeout_%' AND option_name NOT IN (SELECT CONCAT('_transient_', SUBSTRING(option_name, 20)) FROM (SELECT option_name FROM \`$db_name\`.wp_options WHERE option_name LIKE '%_transient_timeout_%') AS t);" 2>/dev/null
-            fi
-        done < <($DB_CMD -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
-        echo "OK ($transients_deleted deleted)"
-        TASKS_SUCCESS+=("WordPress transients")
-    fi
-
-    if [ "$CLEAN_WP_SPAM_COMMENTS" = "TRUE" ] || [ "$CLEAN_WP_SPAM_COMMENTS" = "true" ]; then
-        echo -n "[$(date)] : WP spam comments (>30d)... "
-        comments_deleted=0
-        while read -r db_name; do
-            [ -z "$db_name" ] && continue
-            
-            if $DB_CMD -N -e "SHOW TABLES FROM \`$db_name\` LIKE 'wp_comments';" 2>/dev/null | grep -q "wp_comments"; then
-                count=$($DB_CMD -N -e "DELETE FROM \`$db_name\`.wp_comments WHERE comment_approved = 'spam' AND comment_date < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                    SELECT ROW_COUNT();" 2>/dev/null | tail -1)
-                [ -n "$count" ] && comments_deleted=$((comments_deleted + count))
-                
-                count=$($DB_CMD -N -e "DELETE FROM \`$db_name\`.wp_comments WHERE comment_approved = 'trash' AND comment_date < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                    SELECT ROW_COUNT();" 2>/dev/null | tail -1)
-                [ -n "$count" ] && comments_deleted=$((comments_deleted + count))
-            fi
-        done < <($DB_CMD -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
-        echo "OK ($comments_deleted deleted)"
-        TASKS_SUCCESS+=("WordPress spam comments")
-    fi
-else
-    [ "$CLEAN_WP_DEBUG_TABLES" = "TRUE" ] && TASKS_SKIPPED+=("WordPress debug tables")
-    [ "$CLEAN_WP_REVISIONS" = "TRUE" ] && TASKS_SKIPPED+=("WordPress revisions")
-    [ "$CLEAN_WP_TRANSIENTS" = "TRUE" ] && TASKS_SKIPPED+=("WordPress transients")
-    [ "$CLEAN_WP_SPAM_COMMENTS" = "TRUE" ] && TASKS_SKIPPED+=("WordPress spam comments")
+    TASKS_SUCCESS+=("User trash cleanup")
 fi
 
 echo ""
