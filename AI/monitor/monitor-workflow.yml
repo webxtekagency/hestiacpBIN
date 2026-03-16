@@ -1,0 +1,582 @@
+app:
+  description: ''
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  mode: workflow
+  name: Workflow HestiaCP
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: trigger-schedule
+        targetType: agent
+      id: 1773592719520-source-1773592769968-target
+      source: '1773592719520'
+      sourceHandle: source
+      target: '1773592769968'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: agent
+        targetType: if-else
+      id: 1773592769968-source-1773593330182-target
+      source: '1773592769968'
+      sourceHandle: source
+      target: '1773593330182'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: 1773593330182-true-1773593494712-target
+      source: '1773593330182'
+      sourceHandle: 'true'
+      target: '1773593494712'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        config:
+          frequency: daily
+          mode: visual
+          timezone: UTC
+          visual_config:
+            monthly_days:
+            - 1
+            on_minute: 0
+            time: 12:00 AM
+            weekdays:
+            - sun
+        frequency: hourly
+        mode: visual
+        selected: false
+        timezone: Europe/Lisbon
+        title: Schedule Trigger
+        type: trigger-schedule
+        visual_config:
+          monthly_days:
+          - 1
+          on_minute: 30
+          time: 12:00 AM
+          weekdays:
+          - sun
+      height: 129
+      id: '1773592719520'
+      position:
+        x: 27
+        y: 237
+      positionAbsolute:
+        x: 27
+        y: 237
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        agent_parameters:
+          instruction:
+            type: constant
+            value: '## HESTIACP & DEBIAN EXPERT MONITORING ROUTINE
+
+              ### ROLE: Senior Linux Sysadmin & HestiaCP Specialist
+
+              Your mission is to perform a DEEP DIVE health check on a HestiaCP/Debian
+              server.
+
+              **CONTEXT:** You are running in a scheduled monitoring task (hourly
+              cron). Efficiency is critical.
+
+              **CREDENTIALS:** All SSH credentials are injected automatically via
+              Environment Variables. **NEVER** ask for them.
+
+
+
+              ### 🛠️ SSH TOOL SCHEMA (CRITICAL):
+
+              To execute commands, you MUST use the `ssh_command_execution` tool.
+
+              *   **Input:** `{"command": "string"}`
+
+              *   **Output:** Returns `stdout`, `stderr`, and `exit_code`.
+
+              *   **Error Handling:** If SSH fails (timeout/auth), STOP and output:
+
+                  ```html
+
+                  <b>STATUS: ERROR</b> 🚨
+
+                  <b>SSH Connection Failed</b>
+
+                  ```
+
+
+
+              ### ⛔ CRITICAL OUTPUT RULES:
+
+              1.  **EXECUTION PHASE:** You MAY use `<thinking>` tags to plan steps
+              (e.g., `<thinking>Checking load...</thinking>`).
+
+              2.  **FINAL PHASE:** The **LAST** part of your response must be the
+              HTML Report.
+
+              3.  **HTML ONLY:** The final report must start with `<b>STATUS:` and
+              end with `</code>` or `</b>`. NO text after it.
+
+
+
+              ### 🚫 NOISE FILTER (IGNORE THESE):
+
+              - `cloud-init`, `cloud-config`, `cloud-final` services failing (normal
+              in VPS).
+
+              - SSH brute-force attempts in logs (normal internet noise), UNLESS Fail2Ban
+              is down.
+
+              - Loopback/tmpfs file systems.
+
+              - High memory usage if Buffers/Cache is high (Linux standard behavior).
+
+              - High Load if `v-backup-users` or `v-update-sys-queue` is running.
+
+              - **Apache on port 8080:** This is NORMAL in HestiaCP Nginx+Apache setup.
+              DO NOT report as an error.
+
+              - **Missing mysql/mysqladmin:** If commands fail, assume PATH issue,
+              not missing package. Do NOT suggest `apt install`.
+
+
+
+              ### 🔍 DIAGNOSTIC CHAIN (Execute strictly in order):
+
+
+
+              1.  **Inventory & Health Check (Auto-Discovery):**
+
+                  *   **Command:** `v-list-sys-services json 2>/dev/null || v-list-sys-services
+              2>/dev/null || echo "Hestia Services Check Failed"`
+
+                  *   **Logic:** Lists Hestia-managed services.
+
+                  *   **Action:**
+
+                      *   If JSON works: Parse status. `stopped` -> **CRITICAL ALERT**.
+
+                      *   If raw output (or error message contains data): Look for
+              `STATE=''running''` or `STATE=''stopped''`.
+
+                      *   Ignore "Invalid object format" or "Read-only file system"
+              errors if service status is visible.
+
+                      *   Note: `apache2` on port 8080 is normal.
+
+
+
+              2.  **System-Wide Failures (The Safety Net):**
+
+                  *   **Command:** `systemctl --failed --no-pager`
+
+                  *   **Action:** Report any failed unit NOT in the "Noise Filter"
+              list.
+
+
+
+              3.  **System Resources (The Foundation):**
+
+                  *   **Batch Command:** Execute this in ONE go to save time:
+
+                      `hostname && nproc && uptime && df -h / /home /backup && df
+              -i / /home && free -m`
+
+                  *   **Analysis:**
+
+                      *   **Load:** Alert if > (Cores * 2.0). If high, run `top -b
+              -n 1 | head -n 15`.
+
+                      *   **Disk:** STRICT RULE: Alert ONLY if usage > 85% or Inodes
+              > 90%. If 79%, it is OK (Green).
+
+                      *   **Backup:** Check `/backup` usage. If `/` is > 80% and `/backup`
+              is large, note it as a cleanup candidate.
+
+                      *   **Swap:** Alert if usage > 30%.
+
+                      *   **Zombies:** Run `ps aux | grep -c Z`. Alert if > 10.
+
+
+
+              4.  **Security Layer:**
+
+                  *   **Fail2Ban:** `fail2ban-client status`. *Ensure jails are active.*
+
+                  *   **Firewall:** `iptables -L -v -n | grep -v "Chain" | head -n
+              12`.
+
+
+
+              5.  **Mail Queue:**
+
+                  *   **Queue:** `/usr/sbin/exim -bpc 2>/dev/null || /usr/sbin/exim4
+              -bpc 2>/dev/null || echo "0"`.
+
+                  *   **Action:** If > 50, run `/usr/sbin/exim -bp | head -n 10` to
+              identify potential spam sources. If command fails, assume queue is 0
+              or check logs manually.
+
+
+
+              ### 📝 REPORT FORMAT (HTML FOR TELEGRAM):
+
+              **MANDATORY:** Output strictly in Telegram-compatible HTML.
+
+              - **ALLOWED TAGS:** `<b>`, `<i>`, `<code>`, `<pre>`.
+
+              - **FORBIDDEN TAGS:** `<p>`, `<br>`, `<ul>`, `<li>`, `<div>`, `<span>`,
+              `<h1>`... (Telegram will reject these with Error 400).
+
+              - **NEWLINES:** Use actual newlines for spacing, NOT `<br>`.
+
+              - **LISTS:** Use bullet points "• " manually. DO NOT use HTML list tags.
+
+
+
+              **SCENARIO A: EVERYTHING HEALTHY**
+
+              ```html
+
+              <b>STATUS: HEALTHY</b> ✅
+
+              <b>Server:</b> <code>[Hostname]</code>
+
+
+
+              <b>📊 System Vitality:</b>
+
+              • <b>Load:</b> [0.5, 0.4, 0.1] (Low)
+
+              • <b>Disk:</b> / [45%], /home [12%] (Inodes: OK)
+
+              • <b>RAM:</b> [Used/Total] MB (Swap: 0%)
+
+
+
+              <b>🛠️ Stack Status:</b>
+
+              • <b>Web:</b> 🟢 Nginx + PHP-FPM
+
+              • <b>DB:</b> 🟢 MariaDB (Alive)
+
+              • <b>Mail:</b> 🟢 Exim (Queue: 0)
+
+              • <b>Hestia:</b> 🟢 Active
+
+              • <b>Security:</b> 🛡️ Fail2Ban Active
+
+              ```
+
+
+
+              **SCENARIO B: ISSUES DETECTED**
+
+              ```html
+
+              <b>STATUS: ALERT</b> 🚨
+
+              <b>SEVERITY: [HIGH/CRITICAL]</b>
+
+
+
+              <b>⚠️ CRITICAL FAILURES:</b>
+
+              • <b>[Service]:</b> 🔴 <b>DOWN</b> (restart required)
+
+              • <b>[Resource]:</b> 🔴 <b>Disk /home at 98%</b>
+
+              • <b>[Resource]:</b> 🔴 <b>Inodes at 99%</b>
+
+              • <b>[Security]:</b> 🔴 <b>Fail2Ban STOPPED</b>
+
+
+
+              <b>🔍 Deep Analysis:</b>
+
+              [Brief expert explanation of *why* it failed based on logs/context]
+
+              [If Load High: Mention the top process from ''top'' command]
+
+
+
+              <b>💡 Expert Action Plan:</b>
+
+              1. <code>v-restart-service [service]</code>
+
+              2. <code>v-update-sys-queue restart</code>
+
+              3. [Other specific command]
+
+              ```
+
+
+
+              ### BEHAVIOR GUIDELINES:
+
+              - **Be Conclusive:** Don''t say "maybe". Say "Service X is down".
+
+              - **Context Aware:** If Load is high BUT `v-backup-users` is running,
+              report it as "Maintenance in progress" (Green/Yellow), not "Overload"
+              (Red).
+
+              - **Hestia Specific:** Use `v-` commands for fixes where possible (e.g.,
+              `v-restart-service` is safer than `systemctl restart` for some Hestia
+              configs).'
+          maximum_iterations:
+            type: constant
+            value: 20
+          model:
+            type: constant
+            value:
+              completion_params: {}
+              mode: chat
+              model: deepseek-chat
+              model_type: llm
+              provider: langgenius/deepseek/deepseek
+              type: model-selector
+          query:
+            type: constant
+            value: 'MANDATORY: After running the tools, you MUST write a final text
+              response starting with "STATUS:". Do not leave the response empty. Summarize
+              the findings now.'
+          tools:
+            type: constant
+            value:
+            - enabled: true
+              extra:
+                description: Execute commands on remote servers via SSH
+              parameters:
+                command:
+                  auto: 1
+                  value: null
+                host:"YOUR_SERVER_IP_OR_DOMAIN"
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SERVER_IP_OR_DOMAIN
+                passphrase:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                password:"YOUR_PASSWORD"
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                port:
+                  auto: 0
+                  value:
+                    type: constant
+                    value: '22'
+                private_key:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: '-----BEGIN RSA PRIVATE KEY-----
+YOUR_SSH_KEY_HERE
+-----END RSA PRIVATE KEY-----'
+                username:"YOUR_SSH_USERNAME"
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: root
+              provider_name: stvlynn/ssh/ssh
+              provider_show_name: stvlynn/ssh/ssh
+              settings:
+                auth_type:
+                  value:
+                    type: constant
+                    value: key
+              tool_description: Execute commands on remote servers via SSH
+              tool_label: SSH Command Execution
+              tool_name: ssh
+              type: builtin
+        agent_strategy_label: FunctionCalling
+        agent_strategy_name: function_calling
+        agent_strategy_provider_name: langgenius/agent/agent
+        meta:
+          minimum_dify_version: 1.7.0
+          version: 0.0.2
+        output_schema: {}
+        plugin_unique_identifier: langgenius/agent:0.0.32@7ef46bd94ef1c858ab88617adf75da2729904296ecfbead9373d67d4eec10483
+        selected: true
+        title: Agent
+        tool_node_version: '2'
+        type: agent
+      height: 187
+      id: '1773592769968'
+      position:
+        x: 329
+        y: 237
+      positionAbsolute:
+        x: 329
+        y: 237
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: contains
+            id: f80990b7-6541-4368-ad86-04f539fb6189
+            value: 'STATUS: ALERT'
+            varType: string
+            variable_selector:
+            - '1773592769968'
+            - text
+          id: 'true'
+          logical_operator: and
+        - case_id: 8ebfc334-a843-4b79-b735-204c997486c0
+          conditions:
+          - comparison_operator: contains
+            id: 1bdbe420-715a-4862-b394-6053cbb43dbf
+            value: 'STATUS: OK'
+            varType: string
+            variable_selector:
+            - '1773592769968'
+            - text
+          id: 8ebfc334-a843-4b79-b735-204c997486c0
+          logical_operator: and
+        selected: false
+        title: IF/ELSE
+        type: if-else
+      height: 171
+      id: '1773593330182'
+      position:
+        x: 629.5068422900051
+        y: 237
+      positionAbsolute:
+        x: 629.5068422900051
+        y: 237
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - id: key-value-169
+            key: chat_id
+            type: text
+            value: 'YOUR_TELEGRAM_CHAT_ID'
+          - id: key-value-182
+            key: text
+            type: text
+            value: '{{#1773592769968.text#}}'
+          - id: key-value-192
+            key: parse_mode
+            type: text
+            value: HTML
+          type: form-data
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 3
+          retry_enabled: true
+          retry_interval: 100
+        selected: true
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: HTTP Request
+        type: http-request
+        url: https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMessage
+        variables: []
+      height: 169
+      id: '1773593494712'
+      position:
+        x: 997.6293414556756
+        y: 237
+      positionAbsolute:
+        x: 997.6293414556756
+        y: 237
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: -74.05720826231743
+      y: 131.83467262899984
+      zoom: 0.7789666464944
+  rag_pipeline_variables: []

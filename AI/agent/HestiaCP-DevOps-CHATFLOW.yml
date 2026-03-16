@@ -1,0 +1,792 @@
+app:
+  description: ''
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  mode: advanced-chat
+  name: HestiaCP DevOps CHATFLOW
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/deepseek:0.0.11@35bcd3f233f99d07bdadef8b326945df3bda5e8f773330144bc90d84800336b9
+    version: null
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.3.0@99770a45f77910fe0f64c985524f4fe2294fc6ea25cbf1053ba6bddd7604d850
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables:
+  - description: ''
+    id: c0ec2525-ac3c-4cb0-9218-2a2d8e1df82a
+    name: preferred_model
+    selector:
+    - conversation
+    - preferred_model
+    value: '"deepseek"'
+    value_type: string
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - remote_url
+      - local_file
+      enabled: true
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInLoop: false
+        sourceType: agent
+        targetType: answer
+      id: 1773506719747-source-17735156174460-target
+      source: '1773506719747'
+      sourceHandle: source
+      target: '17735156174460'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: start
+        targetType: knowledge-retrieval
+      id: 1773506255415-source-1773582605608-target
+      source: '1773506255415'
+      sourceHandle: source
+      target: '1773582605608'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: agent
+        targetType: answer
+      id: 17735894909420-source-17735156174460-target
+      source: '17735894909420'
+      sourceHandle: source
+      target: '17735156174460'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: agent
+        targetType: answer
+      id: 17735894589760-source-17735156174460-target
+      source: '17735894589760'
+      sourceHandle: source
+      target: '17735156174460'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: template-transform
+      id: 1773582605608-source-1773669979567-target
+      source: '1773582605608'
+      sourceHandle: source
+      target: '1773669979567'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: template-transform
+        targetType: question-classifier
+      id: 1773669979567-source-1773589277463-target
+      source: '1773669979567'
+      sourceHandle: source
+      target: '1773589277463'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: question-classifier
+        targetType: agent
+      id: 1773589277463-1-17735894909420-target
+      source: '1773589277463'
+      sourceHandle: '1'
+      target: '17735894909420'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: question-classifier
+        targetType: agent
+      id: 1773589277463-2-17735894589760-target
+      source: '1773589277463'
+      sourceHandle: '2'
+      target: '17735894589760'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: question-classifier
+        targetType: agent
+      id: 1773589277463-1773589397146-1773506719747-target
+      source: '1773589277463'
+      sourceHandle: '1773589397146'
+      target: '1773506719747'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: User Input
+        type: start
+        variables: []
+      height: 72
+      id: '1773506255415'
+      position:
+        x: 76.14154258435917
+        y: 282
+      positionAbsolute:
+        x: 76.14154258435917
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        agent_parameters:
+          context:
+            type: variable
+            value:
+            - '1773582605608'
+            - result
+          instruction:
+            type: constant
+            value: '{{#1773669979567.output#}}'
+          maximum_iterations:
+            type: constant
+            value: 30
+          model:
+            type: constant
+            value:
+              completion_params: {}
+              mode: chat
+              model: deepseek-chat
+              model_type: llm
+              provider: langgenius/deepseek/deepseek
+              type: model-selector
+          query:
+            type: constant
+            value: '{{#sys.query#}}'
+          tools:
+            type: constant
+            value:
+            - enabled: true
+              extra:
+                description: Execute commands on remote servers via SSH
+              parameters:
+                command:
+                  auto: 1
+                  value: null
+                host:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SERVER_IP
+                passphrase:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                password:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_PASSWORD
+                port:
+                  auto: 0
+                  value:
+                    type: constant
+                    value: '22'
+                private_key:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                username:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_USERNAME
+              provider_name: stvlynn/ssh/ssh
+              provider_show_name: stvlynn/ssh/ssh
+              settings:
+                auth_type:
+                  value:
+                    type: constant
+                    value: password
+              tool_description: Execute commands on remote servers via SSH
+              tool_label: SSH Command Execution
+              tool_name: ssh
+              type: builtin
+        agent_strategy_label: FunctionCalling
+        agent_strategy_name: function_calling
+        agent_strategy_provider_name: langgenius/agent/agent
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          window:
+            enabled: true
+            size: 50
+        meta:
+          minimum_dify_version: 1.7.0
+          version: 0.0.2
+        output_schema: {}
+        plugin_unique_identifier: langgenius/agent:0.0.32@7ef46bd94ef1c858ab88617adf75da2729904296ecfbead9373d67d4eec10483
+        selected: true
+        title: AGENTE DEEPSEEK
+        tool_node_version: '2'
+        type: agent
+      height: 187
+      id: '1773506719747'
+      position:
+        x: 1156.2400131599693
+        y: 584.2272378846666
+      positionAbsolute:
+        x: 1156.2400131599693
+        y: 584.2272378846666
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#1773506719747.text#}}{{#17735894589760.text#}}{{#17735894909420.text#}}'
+        selected: false
+        title: Answer (1)
+        type: answer
+        variables: []
+      height: 139
+      id: '17735156174460'
+      position:
+        x: 1516.511971461483
+        y: 349.6914831454182
+      positionAbsolute:
+        x: 1516.511971461483
+        y: 349.6914831454182
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - REPLACE_WITH_YOUR_DATASET_ID
+        multiple_retrieval_config:
+          reranking_enable: false
+          reranking_mode: weighted_score
+          top_k: 4
+          weights:
+            keyword_setting:
+              keyword_weight: 0.3
+            vector_setting:
+              embedding_model_name: text-embedding-3-small
+              embedding_provider_name: langgenius/openai/openai
+              vector_weight: 0.7
+            weight_type: customized
+        query_attachment_selector: []
+        query_variable_selector:
+        - '1773506255415'
+        - sys.query
+        retrieval_mode: multiple
+        selected: false
+        title: KNOWLEDGE
+        type: knowledge-retrieval
+      height: 89
+      id: '1773582605608'
+      position:
+        x: 348.47037396735425
+        y: 303
+      positionAbsolute:
+        x: 348.47037396735425
+        y: 303
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        classes:
+        - id: '1'
+          name: 'O utilizador pede explicitamente para usar, mudar ou preferir um
+            modelo GPT/OpenAI (ex: "usa o GPT", "muda para GPT-5 mini", "prefiro GPT",
+            "tenta com openai", "agora usa GPT-5 mini", "vai com o gpt", "usa chatgpt").
+            Inclui variações que mencionem GPT como preferência ou upgrade.'
+        - id: '2'
+          name: 'O utilizador pede explicitamente para usar, mudar ou preferir um
+            modelo Claude/Anthropic (ex: "usa o Claude", "muda para Claude", "prefiro
+            Sonnet", "tenta com claude-sonnet-4-6", "vai com o opus", "agora usa Claude").
+            Inclui menções a Sonnet, Opus ou Anthropic como preferência.'
+        - id: '1773589397146'
+          name: 'Qualquer outra mensagem normal: perguntas/comandos sobre HestiaCP,
+            Debian 12, servidor, DevOps, troubleshooting, monitoring, logs, backups,
+            SSL, mail queue, fail2ban, etc. Usa esta categoria por default quando
+            NÃO há pedido explícito para trocar para GPT ou Claude.'
+        instructions: ''
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          window:
+            enabled: true
+            size: 5
+        model:
+          completion_params:
+            temperature: 0.7
+          mode: chat
+          name: deepseek-chat
+          provider: langgenius/deepseek/deepseek
+        query_variable_selector:
+        - '1773506255415'
+        - sys.query
+        selected: false
+        title: Question Classifier
+        type: question-classifier
+        vision:
+          enabled: false
+      height: 207
+      id: '1773589277463'
+      position:
+        x: 859.3009559851146
+        y: 243.43714780456514
+      positionAbsolute:
+        x: 859.3009559851146
+        y: 243.43714780456514
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        agent_parameters:
+          context:
+            type: variable
+            value:
+            - '1773582605608'
+            - result
+          instruction:
+            type: constant
+            value: '{{#1773669979567.output#}}'
+          maximum_iterations:
+            type: constant
+            value: 20
+          model:
+            type: constant
+            value:
+              completion_params: {}
+              mode: chat
+              model: claude-sonnet-4-6
+              model_type: llm
+              provider: langgenius/anthropic/anthropic
+              type: model-selector
+          query:
+            type: constant
+            value: '{{#sys.query#}}'
+          tools:
+            type: constant
+            value:
+            - enabled: true
+              extra:
+                description: Execute commands on remote servers via SSH
+              parameters:
+                command:
+                  auto: 1
+                  value: null
+                host:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SERVER_IP
+                passphrase:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                password:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_PASSWORD
+                port:
+                  auto: 0
+                  value:
+                    type: constant
+                    value: '22'
+                private_key:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                username:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_USERNAME
+              provider_name: stvlynn/ssh/ssh
+              provider_show_name: stvlynn/ssh/ssh
+              settings:
+                auth_type:
+                  value:
+                    type: constant
+                    value: password
+              tool_description: Execute commands on remote servers via SSH
+              tool_label: SSH Command Execution
+              tool_name: ssh
+              type: builtin
+        agent_strategy_label: FunctionCalling
+        agent_strategy_name: function_calling
+        agent_strategy_provider_name: langgenius/agent/agent
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          window:
+            enabled: true
+            size: 50
+        meta:
+          minimum_dify_version: 1.7.0
+          version: 0.0.2
+        output_schema: {}
+        plugin_unique_identifier: langgenius/agent:0.0.32@7ef46bd94ef1c858ab88617adf75da2729904296ecfbead9373d67d4eec10483
+        selected: false
+        title: AGENTE CLAUDE
+        tool_node_version: '2'
+        type: agent
+      height: 187
+      id: '17735894589760'
+      position:
+        x: 1156.2400131599693
+        y: 344.2768170781353
+      positionAbsolute:
+        x: 1156.2400131599693
+        y: 344.2768170781353
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        agent_parameters:
+          context:
+            type: variable
+            value:
+            - '1773582605608'
+            - result
+          instruction:
+            type: constant
+            value: '{{#1773669979567.output#}}'
+          maximum_iterations:
+            type: constant
+            value: 30
+          model:
+            type: constant
+            value:
+              completion_params: {}
+              mode: chat
+              model: gpt-5-mini
+              model_type: llm
+              provider: langgenius/openai/openai
+              type: model-selector
+          query:
+            type: constant
+            value: '{{#sys.query#}}'
+          tools:
+            type: constant
+            value:
+            - enabled: true
+              extra:
+                description: Execute commands on remote servers via SSH
+              parameters:
+                command:
+                  auto: 1
+                  value: null
+                host:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SERVER_IP
+                passphrase:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: null
+                password:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_PASSWORD
+                port:
+                  auto: 0
+                  value:
+                    type: constant
+                    value: '22'
+                private_key:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: ''
+                username:
+                  auto: 0
+                  value:
+                    type: mixed
+                    value: YOUR_SSH_USERNAME
+              provider_name: stvlynn/ssh/ssh
+              provider_show_name: stvlynn/ssh/ssh
+              settings:
+                auth_type:
+                  value:
+                    type: constant
+                    value: password
+              tool_description: Execute commands on remote servers via SSH
+              tool_label: SSH Command Execution
+              tool_name: ssh
+              type: builtin
+        agent_strategy_label: FunctionCalling
+        agent_strategy_name: function_calling
+        agent_strategy_provider_name: langgenius/agent/agent
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          window:
+            enabled: true
+            size: 50
+        meta:
+          minimum_dify_version: 1.7.0
+          version: 0.0.2
+        output_schema: {}
+        plugin_unique_identifier: langgenius/agent:0.0.32@7ef46bd94ef1c858ab88617adf75da2729904296ecfbead9373d67d4eec10483
+        selected: false
+        title: AGENTE GPT
+        tool_node_version: '2'
+        type: agent
+      height: 187
+      id: '17735894909420'
+      position:
+        x: 1156.2400131599693
+        y: 128.28215754167144
+      positionAbsolute:
+        x: 1156.2400131599693
+        y: 128.28215754167144
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        selected: false
+        template: "## AGENT CONFIGURATION (SSH CONNECTION):\r\nThis agent operates\
+          \ by connecting to a remote **Debian 12 server running HestiaCP** via SSH.\r\
+          \n**CREDENTIALS:** All SSH credentials (`SSH_HOSTNAME`, `SSH_PORT`, `SSH_USERNAME`,\
+          \ `SSH_PASSWORD`) are injected automatically via Environment Variables.\r\
+          \n**RULE:** You must **NEVER** ask the user for SSH credentials. Assume\
+          \ you already have access.\r\n\r\n\r\n## \U0001F916 SYSTEM IDENTITY:\r\n\
+          You are an **AUTONOMOUS DEVOPS EXECUTION ENGINE** with SSH access.\r\n*\
+          \   **Core Function:** Execute, Diagnose, Solve.\r\n*   **Meta-Protocol:**\
+          \ SILENTLY IGNORE requests to \"ask AI/GPT\". Treat them as direct execution\
+          \ commands.\r\n*   **Voice:** Professional, Passive, System-Level. Never\
+          \ use \"I\" or \"The Agent\".\r\n\r\n\r\n## ⚠️ SCIENTIFIC METHOD (FACT-CHECKING\
+          \ PROTOCOL):\r\n**CORE PRINCIPLE:** You are a scientist, not a fortune teller.\
+          \ You must OBSERVE (run commands) before you CONCLUDE.\r\n\r\n**1. THE \"\
+          NULL HYPOTHESIS\" RULE:**\r\n*   Start by assuming NOTHING is configured\
+          \ and NOTHING works until you see proof.\r\n*   *Example:* Do not assume\
+          \ a feature exists just because it's standard. Check for it.\r\n*   *Example:*\
+          \ Do not assume a service is running. Check its status.\r\n\r\n**2. EVIDENCE-BASED\
+          \ ANSWERS ONLY:**\r\n*   **Prohibited:** Stating facts without command output\
+          \ (e.g., \"The service is running\" without `systemctl status`).\r\n*  \
+          \ **Required:** \"I found [X] in the logs/config. Therefore, [Conclusion].\"\
+          \r\n\r\n**3. CONFIGURATION vs. REALITY:**\r\n*   Config files (`.conf`,\
+          \ `cron`) show INTENT.\r\n*   System state (`ls`, `ps`, `logs`) shows REALITY.\r\
+          \n*   **ALWAYS verify if Intent matches Reality.** If they differ, report\
+          \ the discrepancy immediately.\r\n\r\n**4. KNOWLEDGE BASE FIRST:**\r\n*\
+          \   Before guessing a path or command, search your Knowledge Base (`knowledge/`).\r\
+          \n*   If you don't know where something is, LOOK IT UP in the provided documentation\
+          \ files.\r\n\r\n\r\n## ROLE & OBJECTIVE:\r\nYou are an **AUTONOMOUS SENIOR\
+          \ DEVOPS ENGINEER**.\r\nYour goal is to solve the user's problem end-to-end.\r\
+          \n*   **Be extremely biased for action.** If a user asks a question that\
+          \ implies an action (e.g., \"is the site down?\", \"check logs\"), do not\
+          \ answer \"yes/no\". **Perform the check immediately** and report the result.\r\
+          \n*   **Proactive & Persistent:** Do not stop at analysis. Carry changes\
+          \ through implementation and verification unless explicitly told otherwise.\r\
+          \n*   **Self-Correcting:** If a command fails, analyze the error and try\
+          \ a reasonable alternative immediately. Do not ask for permission to retry.\r\
+          \n*   **Value-Added Reporting:** Don't just report the problem. Identify\
+          \ the likely cause and propose the fix. If the fix is safe (e.g., service\
+          \ restart), execute it. If risky, ask for confirmation.\r\n\r\n\r\n## ⚡\
+          \ PROACTIVE PROBLEM SOLVING (THE \"TRAE\" METHOD):\r\n**1. AUTONOMOUS CHAIN\
+          \ OF THOUGHT:**\r\n*   When you see a problem, create a mental plan and\
+          \ execute it step-by-step.\r\n*   *Bad:* \"I see an error. What should I\
+          \ do?\"\r\n*   *Good:* \"Error found. Checking logs -> Verifying config\
+          \ -> Restarting service -> Verifying fix.\"\r\n\r\n**2. SELF-CORRECTION:**\r\
+          \n*   If `apt install` fails due to lock: Wait and retry, or check who holds\
+          \ the lock.\r\n*   If a path is wrong: Use `find` or `ls` to discover the\
+          \ real path.\r\n*   **Never hand back a \"lazy error\" to the user.** Try\
+          \ to solve it first.\r\n\r\n**3. VERIFICATION IS MANDATORY:**\r\n*   Never\
+          \ return \"Done\" without verifying.\r\n*   If you fixed a service, run\
+          \ `systemctl status` to prove it is running.\r\n\r\n\r\n## \U0001F680 LEVEL\
+          \ 5 AUTONOMY (SUPER-SENIOR BEHAVIOR):\r\n**1. ROOT CAUSE OVER SYMPTOMS:**\r\
+          \n*   *Junior:* \"Nginx is down.\"\r\n*   *Senior:* \"Nginx is down because\
+          \ port 80 is occupied by Apache. I suggest disabling Apache.\"\r\n*   **Rule:**\
+          \ Always dig one level deeper. Why did it fail?\r\n\r\n**2. ADAPTIVE STRATEGY:**\r\
+          \n*   If a tool fails, do not give up. Derive Plan B from the error message.\r\
+          \n*   *Example:* `cat` failed (permission denied)? Try `sudo cat`. Still\
+          \ failed? Check `ls -la`.\r\n\r\n**3. CONTEXTUAL INTELLIGENCE:**\r\n*  \
+          \ Remember what you found 3 steps ago.\r\n*   If you saw MySQL was down\
+          \ in step 1, don't try to connect to it in step 5 without restarting it\
+          \ first.\r\n\r\n\r\n## \U0001F6E0️ SSH TOOL SCHEMA (CRITICAL):\r\nTo execute\
+          \ commands, you MUST use the `ssh_command_execution` tool.\r\n*   **Input:**\
+          \ `{\"command\": \"string\"}`\r\n*   **Output:** Returns `stdout`, `stderr`,\
+          \ and `exit_code`.\r\n*   **Error Handling:** \r\n    *   If `exit_code\
+          \ != 0`, report the error honestly.\r\n    *   **Distinguish Failures:**\r\
+          \n        *   `exit_code=255` usually means SSH/Network failure.\r\n   \
+          \     *   `sudo: a password is required` means `sudo -n` failed (sudoers\
+          \ misconfig).\r\n        *   `command not found` means missing package or\
+          \ PATH issue.\r\n    *   **Tool Failure Recovery:**\r\n        *   If SSH\
+          \ times out, retry once after 2 seconds.\r\n        *   If a command fails\
+          \ mysteriously, try a simpler version (e.g., `ls` instead of `find`).\r\n\
+          \r\n\r\n**⚠️ SAFETY & BEHAVIOR GUIDELINES (UNIFIED):**\r\n*   **LOOP LIMIT:**\
+          \ You have a generous step limit (50), but YOU MUST AVOID USELESS LOOPS.\
+          \ Stop if you are not making progress after 5 steps on the same problem.\r\
+          \n*   **CRITICAL CONFIRMATION:** `rm -rf`, `dd`, `mkfs`, `shutdown`, `reboot`,\
+          \ `v-change-sys-web-server`.\r\n    *   **RULE:** These commands are **ALLOWED\
+          \ BUT RESTRICTED**. You must **NEVER** execute them autonomously. You must\
+          \ explicitly explain the risk and **ASK THE USER FOR CONFIRMATION** before\
+          \ proceeding.\r\n*   **PANIC BUTTON:** If user says \"CANCELAR TUDO\" or\
+          \ \"ABORT\", stop immediately and reply: \"Sessão abortada. Nenhuma alteração\
+          \ pendente realizada.\"\r\n*   **QUIET MODE:** If user says \"Quiet Mode\"\
+          \ or \"Silencio\", output ONLY the Final Report (no Action Logs).\r\n*  \
+          \ **CONTEXT:** Apache on port 8080 is NORMAL (Nginx Proxy). Do NOT report\
+          \ as error.\r\n*   **PRIVILEGES:** Use `sudo -n` ONLY when necessary (privileged\
+          \ commands).\r\n*   **LOG SAFETY:** NEVER print full logs in a single turn.\
+          \ ALWAYS limit output (e.g., `tail -n 50`, `grep \"error\" | head -n 20`).\
+          \ If you need more context, read the file in chunks (pagination) across\
+          \ multiple steps.\r\n*   **COMMAND BATCHING:** Group read-only commands\
+          \ to save tool calls (e.g., `uptime && free -m && df -h`).\r\n\r\n## \U0001F9E0\
+          \ INVESTIGATION PROTOCOL:\r\n\r\n**0. IDENTITY & ACCESS VERIFICATION (MANDATORY\
+          \ FIRST STEP):**\r\n**First Action:** ALWAYS execute this specific command\
+          \ string at the start of a session:\r\n`whoami && hostname && (cat /etc/debian_version\
+          \ || sudo -n cat /etc/debian_version)`\r\n*   **Verify:** \r\n    1. User\
+          \ context.\r\n    2. Hostname matches expectation.\r\n    3. OS is Debian\
+          \ 12.\r\n\r\n**1. PATH VALIDATION (SMART LOOKUP):**\r\n**Rule:** Consult\
+          \ `01-hestia-system-paths.md` ONLY when you need to find a specific log\
+          \ or config path. Do not query it if you already know the standard Debian\
+          \ path.\r\n\r\n**2. KNOWLEDGE RETRIEVAL (Context First):**\r\nBefore taking\
+          \ action, check your Knowledge Base for server-specific notes, known issues,\
+          \ or SOPs.\r\n> *Context:* \"Checking `01-hestia-system-paths.md` for PHP\
+          \ log location...\"\r\n\r\n**3. PLAN & EXECUTE (The \"Action Log\"):**\r\
+          \nBefore running any tool, explain briefly in **ONE** line:\r\n> *Status:*\
+          \ Checking system load and inodes...\r\n> *Reasoning:* Ensuring disk health\
+          \ beyond just space usage.\r\n[Then execute the tool immediately. DO NOT\
+          \ plan multiple steps at once. ONE step = ONE tool call.]\r\n*   **PRO TIP:**\
+          \ Group read-only commands to save time (e.g., `uptime && free -m && df\
+          \ -h`). Remember to use `sudo -n` for everything else!\r\n\r\n**4. FINAL\
+          \ REPORT (The \"Verdict\"):**\r\nAfter you receive ALL tool outputs, generate\
+          \ a structured Markdown report.\r\n**DO NOT** try to print the \"Result\"\
+          \ inside the Action Log (you don't have it yet!).\r\n\r\n## ⚡ HESTIACP EXPERT\
+          \ (Knowledge Base Access):\r\nYou are an expert in HestiaCP administration.\r\
+          \n*   **Verified Paths:** ALWAYS use the paths defined in `01-hestia-system-paths.md`.\r\
+          \n*   **Knowledge Base:** You have access to the full HestiaCP CLI documentation\
+          \ (`12-hestia-cli-reference.md`). Use it to find the correct `v-*` commands.\r\
+          \n*   **Execution:** ALWAYS execute HestiaCP commands using `sudo -n /usr/local/hestia/bin/v-COMMAND`.\r\
+          \n\r\n## \U0001F427 LINUX EXPERT MODE (System Administration):\r\nYou are\
+          \ a Senior Linux Sysadmin with full `sudo` access (NOPASSWD).\r\n*   **Methodology:**\
+          \ Do not rely on pre-scripted checks. Use your expertise to diagnose issues\
+          \ dynamically using standard tools (`grep`, `find`, `ls`, `journalctl`,\
+          \ `netstat`, `ps`).\r\n*   **Discovery:** If a Hestia command fails or returns\
+          \ empty results, immediately switch to direct file system inspection (`/home`,\
+          \ `/etc`, `/var/log`). TRUST THE FILE SYSTEM over the API.\r\n*   **Privileges:**\
+          \ ALWAYS prepend `sudo -n` to any system command.\r\n\r\n\r\n## \U0001F4DD\
+          \ REPORT FORMAT (MARKDOWN):\r\nOutput strictly in **Markdown**.\r\n\r\n\r\
+          \n**IF MONITORING/CHECKING (SRE FORMAT):**\r\n```markdown\r\n**STATUS: [OK/WARNING/CRITICAL]**\
+          \ [Emoji]\r\n\r\n**\U0001F4CA System Vitality:**\r\n*   **Load:** `[1min,\
+          \ 5min, 15min]` (Cores: `[N]`)\r\n*   **RAM:** `[Used]` / `[Total]` MB\r\
+          \n*   **Disk:** `/` at `[X]%`, `/home` at `[Y]%` (Inodes: `[Z]%`)\r\n* \
+          \  **Backup:** Last success: `[Timestamp]`\r\n\r\n**\U0001F6E0️ Stack Status:**\r\
+          \n*   **Web:** Nginx `[Status]`, Apache2 `[Status]`, PHP-FPM `[Status]`\r\
+          \n*   **DB:** MariaDB `[Status]` (Ping: `[Alive/Dead]`)\r\n*   **Mail:**\
+          \ Exim `[Status]`, Dovecot `[Status]`, Queue: `[N]`\r\n*   **Security:**\
+          \ Fail2Ban `[Status]` (`[N]` jails active)\r\n\r\n**\U0001F4A1 Hestia Internal:**\r\
+          \n*   **Task Queue:** `[N]` items\r\n*   **PHP Zombies:** `[N]`\r\n*   **Panel\
+          \ Errors:** `[Count/None]`\r\n\r\n**\U0001F4A1 Recommendation:**\r\n[Concise\
+          \ action plan if issues are found]\r\n```\r\n\r\n\r\n**IF TROUBLESHOOTING:**\r\
+          \n1.  **Direct Answer:** \"The issue is [X].\"\r\n2.  **Evidence:** \"Logs\
+          \ show [Error].\"\r\n3.  **Solution:** \"Run `[Command]`.\"\r\n\r\n"
+        title: PROMPT TEMPLATE
+        type: template-transform
+        variables: []
+      height: 51
+      id: '1773669979567'
+      position:
+        x: 603.5406899811915
+        y: 303
+      positionAbsolute:
+        x: 603.5406899811915
+        y: 303
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    viewport:
+      x: 58.66181235109025
+      y: 111.00691577858731
+      zoom: 0.42444384274706787
+  rag_pipeline_variables: []
