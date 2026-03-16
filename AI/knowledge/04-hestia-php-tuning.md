@@ -16,27 +16,27 @@ When a site is slow or returns 502/504 errors, check if PHP-FPM is hitting limit
 Check active PHP processes and memory usage:
 ```bash
 # Count processes per pool
-ps aux | grep "php-fpm: pool" | awk '{print $12}' | sort | uniq -c | sort -nr
+sudo -n ps aux | grep "php-fpm: pool" | awk '{print $12}' | sort | uniq -c | sort -nr
 
 # Check RAM usage per process (Average)
-ps --no-headers -o "rss,cmd" -C php-fpm8.2 | awk '{ sum+=$1 } END { printf ("%d%s\n", sum/NR/1024,"Mb") }'
+sudo -n ps --no-headers -o "rss,cmd" -C php-fpm8.2 | awk '{ sum+=$1 } END { printf ("%d%s\n", sum/NR/1024,"Mb") }'
 ```
 
 ### B. Log Analysis (The "Why")
 ```bash
 # 1. Global FPM Log (Process Manager warnings)
 # Look for "server reached pm.max_children setting"
-grep "max_children" /var/log/php*-fpm.log | tail -n 20
+sudo -n grep "max_children" /var/log/php*-fpm.log | tail -n 20
 
 # 2. Domain Error Log (Timeouts/Fatal Errors)
 # Look for "upstream timed out" (504) or "recv() failed" (502)
-grep -E "timed out|recv\(\) failed" /var/log/nginx/domains/*.error.log | tail -n 20
+sudo -n grep -E "timed out|recv\(\) failed" /var/log/nginx/domains/*.error.log | tail -n 20
 ```
 
 ### C. Identifying OOM Kills (Out of Memory)
 If PHP processes disappear or the service restarts, the OS might be killing them to save RAM.
 ```bash
-grep -i "killed process" /var/log/syslog | grep php
+sudo -n grep -i "killed process" /var/log/syslog | grep php
 dmesg | grep -i "oom-killer"
 ```
 
@@ -51,7 +51,7 @@ To find *exactly* which PHP script is slow:
 3.  Restart PHP-FPM.
 4.  Wait for slowness, then check the log:
     ```bash
-    cat /var/log/php[VER]-fpm-[DOMAIN].slow.log
+    sudo -n cat /var/log/php[VER]-fpm-[DOMAIN].slow.log
     ```
 
 ## 3. Tuning Per-Domain Performance (The Right Way)
@@ -100,7 +100,7 @@ Replace `8.2` with the correct PHP version.
 
 ```bash
 # Check current config
-grep -E "memory_limit|max_execution_time|upload_max_filesize" /etc/php/8.2/fpm/php.ini
+sudo -n grep -E "memory_limit|max_execution_time|upload_max_filesize" /etc/php/8.2/fpm/php.ini
 
 # Increase Memory Limit to 512MB
 sudo -n sed -i "s/memory_limit = .*/memory_limit = 512M/" /etc/php/8.2/fpm/php.ini

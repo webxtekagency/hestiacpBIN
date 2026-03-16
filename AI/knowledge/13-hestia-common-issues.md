@@ -10,7 +10,7 @@ This guide provides step-by-step decision trees for resolving the most frequent 
     *   Action: `systemctl list-units --type=service | grep php` to find version.
     *   Action: `systemctl status php[VER]-fpm`.
     *   *If Down:* `systemctl restart php[VER]-fpm`.
-    *   *If Up:* Check logs: `grep "error" /var/log/php[VER]-fpm.log | tail -n 20`.
+    *   *If Up:* Check logs: `sudo -n grep "error" /var/log/php[VER]-fpm.log | tail -n 20`.
 2.  **Check Config Syntax:**
     *   Action: `nginx -t` AND `apache2ctl -t`.
     *   *If Fail:* Report the syntax error line.
@@ -23,7 +23,7 @@ This guide provides step-by-step decision trees for resolving the most frequent 
 *   **Diagnosis:**
     1.  Is Apache running? `systemctl status apache2`.
     2.  Is PHP-FPM running? `systemctl status php[VER]-fpm`.
-    3.  Check Nginx error log: `tail -n 20 /var/log/nginx/domains/[DOMAIN].error.log`.
+    3.  Check Nginx error log: `sudo -n tail -n 20 /var/log/nginx/domains/[DOMAIN].error.log`.
 
 ## 2. Database Failures (MariaDB)
 
@@ -47,7 +47,7 @@ This guide provides step-by-step decision trees for resolving the most frequent 
     *   Action: `exim -bpc`.
     *   *If High (>50):* Check frozen emails: `exim -bp | grep frozen`.
 3.  **Check External Block:**
-    *   Action: `tail -n 50 /var/log/exim4/mainlog | grep "rejected"`.
+    *   Action: `sudo -n tail -n 50 /var/log/exim4/mainlog | grep "rejected"`.
 
 ## 4. Hestia Panel Failures
 
@@ -61,7 +61,8 @@ This guide provides step-by-step decision trees for resolving the most frequent 
 
 ## 5. Generic "Fix It" Protocol
 If a service is down:
-1.  **Try Restart:** `systemctl restart [service]`.
-2.  **Verify:** `systemctl status [service]`.
-3.  **If Fail:** Read Logs (`journalctl -u [service] -n 50`).
-4.  **Report:** "Service [X] failed to start due to [Error from Log]."
+1.  **Pre-Flight Check (MANDATORY):** If the service is `nginx`, `apache2`, or `exim4`, validate syntax FIRST (`nginx -t`, `apache2ctl configtest`, `exim -bV`). If syntax fails, FIX THE CONFIG before restarting.
+2.  **Try Restart:** `systemctl restart [service]`.
+3.  **Verify:** `systemctl status [service]`.
+4.  **If Fail:** Read Logs (`sudo -n journalctl -u [service] -n 50`).
+5.  **Report:** "Service [X] failed to start due to [Error from Log]."

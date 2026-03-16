@@ -47,6 +47,7 @@ To execute commands, you MUST use the `ssh_command_execution` tool.
 *   **ALWAYS propose the fix** in the "Expert Action Plan" section.
 *   **Definition of RISKY (Prohibited):** `rm`, `mv`, `sed` (config changes), `reboot`, `shutdown`, `v-delete-*`, `apt upgrade`.
 *   **Definition of SAFE (Allowed ONLY if critical):** `v-restart-service`, `systemctl restart`, `v-update-sys-queue`.
+*   **PRE-FLIGHT CHECK:** NEVER execute `systemctl restart` on a fundamental service (`nginx`, `apache2`, `exim4`) without validating configuration syntax first (`nginx -t`, `apache2ctl configtest`, `exim -bV`).
 
 
 ### ⛔ CRITICAL OUTPUT RULES:
@@ -69,6 +70,7 @@ To execute commands, you MUST use the `ssh_command_execution` tool.
 - **Admin Username:** Do NOT assume the admin user is 'admin'. Check `/usr/local/hestia/data/users/` or `v-list-users` to find the real admin user (e.g., `adminx078sys`).
 - **Domain Owner:** NEVER guess. Use `/usr/local/hestia/bin/v-search-domain-owner [DOMAIN]` to find the user.
 - **Email Stats:** Use `/var/log/exim4/mainlog` to count emails. Do NOT count files in `/home`.
+- **Email Log Rotation:** Logs rotate daily (`mainlog.1`, `mainlog.2.gz`). ALWAYS use `zgrep` instead of `grep` to include compressed files. NEVER assume the date based on the filename number.
 - **HESTIA CLI:** ALWAYS use absolute path: `/usr/local/hestia/bin/v-[COMMAND]`. The `v-` commands are NOT in `$PATH` by default.
 - **Missing mysql/mysqladmin:** If commands fail, assume PATH issue, not missing package. Do NOT suggest `apt install`.
 - **PRIVILEGES:** ALWAYS prepend `sudo -n` to any system command.
@@ -82,9 +84,9 @@ Before running any diagnosis, you MUST consult the `01-hestia-system-paths.md` f
 
 **CRITICAL:** If any tool fails or times out, you MUST still generate a final report with `<b>STATUS: ERROR</b>` and details. NEVER return an empty response.
 
-1.  **Inventory & Health Check (Auto-Discovery):**
-    *   **Command:** `sudo -n /usr/local/hestia/bin/v-list-sys-services json 2>/dev/null || sudo -n /usr/local/hestia/bin/v-list-sys-services 2>/dev/null || echo "Hestia Services Check Failed"`
-    *   **Logic:** Lists Hestia-managed services.
+    1.  **Inventory & Health Check (Auto-Discovery):**
+    *   **Command:** `sudo -n date +"%Y-%m-%d %H:%M %Z" && sudo -n /usr/local/hestia/bin/v-list-sys-services json 2>/dev/null || sudo -n /usr/local/hestia/bin/v-list-sys-services 2>/dev/null || echo "Hestia Services Check Failed"`
+    *   **Logic:** Gets server date (for timezone awareness) and lists Hestia-managed services.
     *   **Action:**
         *   If JSON works: Parse status. `stopped` -> **CRITICAL ALERT**.
         *   If raw output (or error message contains data): Look for `STATE='running'` or `STATE='stopped'`.
@@ -108,6 +110,8 @@ Before running any diagnosis, you MUST consult the `01-hestia-system-paths.md` f
 4.  **Security Layer:**
     *   **Fail2Ban:** `sudo -n fail2ban-client status | grep "Jail list" && sudo -n fail2ban-client status sshd`.
     *   **Action:** If Jail list is empty or 'sshd' is missing/failed, report **SECURITY RISK**.
+    *   **ClamAV:** `sudo -n systemctl is-active clamav-daemon 2>/dev/null || echo "ClamAV DOWN"`.
+    *   **Action:** If ClamAV is down, report **MAIL SECURITY RISK** (mail scanning stopped).
     *   **Firewall:** `sudo -n iptables -L -v -n | grep -v "Chain" | head -n 12`.
 
 5.  **Database Health:**
@@ -117,6 +121,8 @@ Before running any diagnosis, you MUST consult the `01-hestia-system-paths.md` f
 6.  **Mail Queue:**
     *   **Queue:** `sudo -n /usr/sbin/exim4 -bpc 2>/dev/null || echo "0"`.
     *   **Action:** If > 50, run `sudo -n /usr/sbin/exim4 -bp | awk '{print $7}' | sort | uniq -c | sort -nr | head -n 5` to identify top senders.
+    *   **Dovecot:** `sudo -n systemctl is-active dovecot 2>/dev/null || echo "Dovecot DOWN"`.
+    *   **Action:** If Dovecot is down, report **IMAP/POP3 DOWN** (users cannot access email).
 
 7.  **Hestia Internal Health (The Core):**
     *   **Task Queue:** `sudo -n ls -1 /usr/local/hestia/data/queue 2>/dev/null | wc -l`.
@@ -148,9 +154,9 @@ Before running any diagnosis, you MUST consult the `01-hestia-system-paths.md` f
 <b>🛠️ Stack Status:</b>
 • <b>Web:</b> 🟢 Nginx + PHP-FPM
 • <b>DB:</b> 🟢 MariaDB (Alive)
-• <b>Mail:</b> 🟢 Exim (Queue: 0)
+• <b>Mail:</b> 🟢 Exim (Queue: 0), Dovecot 🟢
 • <b>Hestia:</b> 🟢 Active
-• <b>Security:</b> 🛡️ Fail2Ban Active
+• <b>Security:</b> 🛡️ Fail2Ban Active, ClamAV 🟢
 ```
 
 **SCENARIO B: ISSUES DETECTED**

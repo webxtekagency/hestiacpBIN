@@ -51,7 +51,7 @@ sudo -n clamdscan --multiscan --fdpass /home/USER/web/DOMAIN/public_html
 If ClamAV kills the server (OOM):
 1.  **Check `clamdtop`:** Live view of what it's scanning.
 2.  **Exclude Paths:** Edit `/etc/clamav/clamd.conf` -> `ExcludePath`.
-3.  **RAM Usage:** ClamAV needs ~1.5GB RAM just to load definitions. If you have < 4GB RAM, consider disabling it for Mail if not critical.
+3.  **RAM Usage:** ClamAV needs ~1.5GB RAM just to load definitions. If you have < 4GB RAM, add Swap (`fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile`) or consider upgrading the VPS RAM. Do NOT disable ClamAV as a first resort — security should always be preserved.
 
 ## 6. Integration
 *   **Mail:** Enabled via Hestia UI -> Mail Domain -> Edit -> Antivirus.

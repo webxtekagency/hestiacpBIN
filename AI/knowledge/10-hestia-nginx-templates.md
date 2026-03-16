@@ -30,7 +30,7 @@
 
 3.  **Apply the template to a domain:**
     ```bash
-    v-change-web-domain-proxy-tpl USER DOMAIN my-custom
+    sudo -n /usr/local/hestia/bin/v-change-web-domain-proxy-tpl USER DOMAIN my-custom
     ```
     *(For Apache backend, use `v-change-web-domain-tpl`)*
 
@@ -43,10 +43,10 @@
 ## 5. Troubleshooting
 - **Rebuild Domain:** If changes don't appear, force a rebuild:
   ```bash
-  v-rebuild-web-domain USER DOMAIN
+  sudo -n /usr/local/hestia/bin/v-rebuild-web-domain USER DOMAIN
   ```
 - **Test Nginx Config:**
   ```bash
-  nginx -t
+  sudo -n nginx -t
   ```
 

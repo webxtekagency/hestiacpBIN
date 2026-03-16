@@ -9,12 +9,15 @@ Use these commands to extract meaningful data. **Always use `sudo -n`**.
 | Component | Goal | Command Pattern |
 | :--- | :--- | :--- |
 | **Email (Live)** | Watch incoming/outgoing mail | `sudo -n tail -f /var/log/exim4/mainlog` |
-| **Email (History)** | Find specific address (incl. rotated) | `sudo -n grep "user@domain.com" /var/log/exim4/mainlog*` |
+| **Email (History)** | Find specific address (incl. rotated) | `sudo -n zgrep "user@domain.com" /var/log/exim4/mainlog*` |
+| **Email (Count)** | Count emails without dumping log | `sudo -n zgrep -c "user@domain.com" /var/log/exim4/mainlog*` |
 | **Web Errors** | Real-time website errors | `sudo -n tail -f /var/log/apache2/domains/DOMAIN.error.log` |
 | **Web Access** | Who is visiting now? | `sudo -n tail -f /var/log/nginx/domains/DOMAIN.log` |
 | **PHP Crash** | Check for OOM/Segfaults | `sudo -n grep "segfault" /var/log/syslog` |
 | **DB Crash** | Why did MariaDB die? | `sudo -n tail -n 50 /var/log/mysql/error.log` |
-| **Auth Fail** | Who is trying to hack SSH? | `sudo -n grep "Failed password" /var/log/auth.log` |
+| **Firewall Bans** | Who is banned by Fail2Ban? | `sudo -n tail -n 50 /var/log/fail2ban.log` |
+| **Virus Scan** | ClamAV mail/security results | `sudo -n tail -n 50 /var/log/clamav/clamav.log` |
+| **SSH Brute Force** | Who is trying to hack SSH? | `sudo -n grep "Failed password" /var/log/auth.log \| tail -n 20` |
 
 ## 3. Component-Specific Diagnostics
 
@@ -78,34 +81,52 @@ Use these commands to extract meaningful data. **Always use `sudo -n`**.
 Instead of opening 5 terminals, watch all web errors at once:
 ```bash
 # Watch all Nginx domain errors
-tail -f /var/log/nginx/domains/*.error.log
+sudo -n tail -f /var/log/nginx/domains/*.error.log
 
 # Watch all Apache domain errors
-tail -f /var/log/apache2/domains/*.error.log
+sudo -n tail -f /var/log/apache2/domains/*.error.log
 ```
 
 ### B. Filtering by Time (What happened today?)
 Don't scroll through millions of lines. Filter by date:
 ```bash
 # Find errors from Today (regex matches date format in logs)
-grep "^$(date +%Y/%m/%d)" /var/log/nginx/domains/example.com.error.log
+sudo -n grep "^$(date +%Y/%m/%d)" /var/log/nginx/domains/example.com.error.log
 ```
 
 ### C. Systemd Logs (Journalctl)
 Some services (like php-fpm or mariadb) log startup/crash errors to systemd, not just files.
 ```bash
 # Why did the service fail to start?
-journalctl -u mariadb.service --no-pager -n 50
+sudo -n journalctl -u mariadb.service --no-pager -n 50
 
 # Follow live output of a service
-journalctl -u php8.2-fpm.service -f
+sudo -n journalctl -u php8.2-fpm.service -f
 ```
 
 ### D. Finding the "Top" Errors
 What is the most common error on your server?
 ```bash
 # Top 10 Nginx errors
-grep "error" /var/log/nginx/error.log | awk -F'] ' '{print $2}' | sort | uniq -c | sort -nr | head -n 10
+sudo -n grep "error" /var/log/nginx/error.log | awk -F'] ' '{print $2}' | sort | uniq -c | sort -nr | head -n 10
 ```
+
+### E. Summarizing Massive Log Outputs (Batch Processing)
+**CRITICAL:** Never `cat` or `zgrep` a full day's log without summarizing first. Massive outputs will crash your context limit.
+1.  **Count matches first:** Use `zgrep -c` or `wc -l`.
+    ```bash
+    # Count how many emails were sent/received by this address across all logs
+    sudo -n zgrep -c "olgafreitas@koolfitness.pt" /var/log/exim4/mainlog*
+    ```
+2.  **Filter by time blocks (Batching):** If you need to read the contents of a busy day, chunk it by hours.
+    ```bash
+    # Show emails only between 10:00 and 10:59 on March 15
+    sudo -n zgrep "^2026-03-15 10:" /var/log/exim4/mainlog.1
+    ```
+3.  **Use `head` or `tail` for previews:**
+    ```bash
+    # Look at the first 50 results to understand the pattern before dumping everything
+    sudo -n zgrep "olgafreitas@koolfitness.pt" /var/log/exim4/mainlog.1 | head -n 50
+    ```
 
 

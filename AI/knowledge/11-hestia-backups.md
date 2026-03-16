@@ -91,7 +91,7 @@ If `v-backup-users` is running forever:
 
 1.  **Check Logs:**
     ```bash
-    tail -n 50 /var/log/hestia/backup.log
+    sudo -n tail -n 50 /var/log/hestia/backup.log
     ```
 2.  **Check Exclusions:**
     If backups are too big, check exclusion lists:

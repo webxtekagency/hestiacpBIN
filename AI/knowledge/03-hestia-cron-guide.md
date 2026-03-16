@@ -43,7 +43,7 @@ These run as root and are critical for maintenance.
 ### A. List System Jobs
 ```bash
 # Main crontab
-cat /etc/crontab
+sudo -n cat /etc/crontab
 
 # Daily scripts
 ls -l /etc/cron.daily/
