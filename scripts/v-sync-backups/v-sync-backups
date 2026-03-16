@@ -1,0 +1,142 @@
+#!/bin/bash
+# info: sync backup metadata with filesystem
+# options: [USER] [DRY_RUN]
+#
+# example: v-sync-backups admin dry-run
+#
+# This script validates if the backups listed in HestiaCP database actually exist
+# on the filesystem (or as valid symlinks). If they are missing, it removes the
+# phantom record from HestiaCP to sync the counters.
+
+#----------------------------------------------------------#
+#                Variables & Functions                     #
+#----------------------------------------------------------#
+
+# HestiaCP Default Path
+export HESTIA='/usr/local/hestia'
+
+# Source HestiaCP configuration
+if [ -f "$HESTIA/conf/hestia.conf" ]; then
+    source $HESTIA/conf/hestia.conf
+else
+    echo "Error: HestiaCP config not found at $HESTIA/conf/hestia.conf"
+    exit 1
+fi
+
+# Source HestiaCP main functions
+if [ -f "$HESTIA/func/main.sh" ]; then
+    source $HESTIA/func/main.sh
+else
+    echo "Error: HestiaCP functions not found at $HESTIA/func/main.sh"
+    exit 1
+fi
+
+# Argument definition
+user=$1
+dry_run=$2
+
+# Handle "dry-run" as first argument if user is omitted
+if [ "$user" = "dry-run" ]; then
+    user=""
+    dry_run="dry-run"
+fi
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+# Verify if Hestia binaries are available
+if [ ! -x "$BIN/v-delete-user-backup" ]; then
+    echo "Error: HestiaCP binaries not found in $BIN"
+    exit 1
+fi
+
+# Verify user existence if provided
+if [ ! -z "$user" ]; then
+    if [ ! -d "$HESTIA/data/users/$user" ]; then
+        echo "Error: User $user does not exist."
+        exit 3
+    fi
+fi
+
+#----------------------------------------------------------#
+#                       Action                             #
+#----------------------------------------------------------#
+
+# Define user list
+if [ -z "$user" ]; then
+    if [ -d "$HESTIA/data/users" ]; then
+        user_list=$(ls $HESTIA/data/users)
+    else
+        echo "Error: HestiaCP users directory not found."
+        exit 1
+    fi
+else
+    user_list="$user"
+fi
+
+for u in $user_list; do
+    user_conf="$HESTIA/data/users/$u/user.conf"
+    backup_conf="$HESTIA/data/users/$u/backup.conf"
+
+    if [ ! -f "$backup_conf" ]; then
+        continue
+    fi
+    
+    # Array to store backups to delete to avoid modifying file while reading
+    to_delete=()
+
+    # Parse backup config line by line
+    while read -r line; do
+        # Extract backup filename from config line (BACKUP='filename.tar')
+        # Only process lines starting with BACKUP=
+        if [[ ! "$line" =~ ^BACKUP= ]]; then
+            continue
+        fi
+
+        backup_file=$(echo "$line" | cut -d"'" -f2)
+        
+        if [ -z "$backup_file" ]; then
+            continue
+        fi
+
+        # Check physical existence
+        # $BACKUP is defined in hestia.conf, usually /backup
+        backup_path="$BACKUP/$backup_file"
+        
+        if [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ]; then
+            echo "[!] Phantom backup detected for user $u: $backup_file"
+            to_delete+=("$backup_file")
+        else
+            # Check for broken symlinks (exists as link, but target missing)
+            if [ -L "$backup_path" ] && [ ! -e "$backup_path" ]; then
+                echo "[WARN] Backup $backup_file is a BROKEN symlink. Keeping record, but check target."
+            fi
+        fi
+
+    done < "$backup_conf"
+    
+    # Process deletions
+    changes=0
+    for backup_file in "${to_delete[@]}"; do
+        if [ "$dry_run" = "dry-run" ]; then
+            echo "    [DRY-RUN] Would run: v-delete-user-backup $u $backup_file"
+        else
+            echo "    [FIX] Removing phantom record: $backup_file"
+            $BIN/v-delete-user-backup "$u" "$backup_file"
+            if [ $? -eq 0 ]; then
+                echo "    [OK] Successfully removed."
+                changes=$((changes+1))
+            else
+                echo "    [ERROR] Failed to remove."
+            fi
+        fi
+    done
+    
+    # Update stats if changes were made
+    if [ "$dry_run" != "dry-run" ] && [ $changes -gt 0 ]; then
+        $BIN/v-update-user-stats "$u"
+    fi
+done
+
+exit 0
