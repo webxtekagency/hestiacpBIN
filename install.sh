@@ -148,6 +148,9 @@ echo "v-system-report:"
 install_script "$SRC_DIR/scripts/system-report/v-system-report" "v-system-report"
 install_config "$SRC_DIR/scripts/system-report/system-report.conf.sample" "/etc/hestiacp-system-report.conf"
 
+echo "v-sync-backups:"
+install_script "$SRC_DIR/scripts/v-sync-backups/v-sync-backups" "v-sync-backups"
+
 # ---------------------------------------------------------------------------
 # CRON SETUP (only if --setup-crons was passed)
 # ---------------------------------------------------------------------------
