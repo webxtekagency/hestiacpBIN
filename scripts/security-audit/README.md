@@ -42,9 +42,9 @@ Audits the server infrastructure as root. Independent of any website.
 | Services | Nginx, PHP-FPM, MariaDB status, root process detection |
 | Database | Root auth method, anonymous users, remote root access, test DB |
 | Mail | Open relay, ClamAV freshness, DKIM, SPF records |
-| Kernel Hardening | ASLR, SYN cookies, IP forwarding, ICMP redirects, source routing, core dumps |
-| Filesystem Security | /etc/shadow & /etc/passwd perms, /tmp mount options, sticky bit, Hestia bin/ integrity, crontab perms |
-| User Accounts | UID 0 audit, empty passwords, login shell count, password policy, NTP sync, AppArmor |
+| Kernel Hardening | ASLR, SYN cookies, IP forwarding, ICMP redirects, source routing, core dumps, CVE Profiling (Dirty COW / Dirty Pipe) |
+| Filesystem Security | /etc/shadow & /etc/passwd perms, /tmp mount options, sticky bit, Hestia bin/ integrity, crontab perms, SUID Capabilities Audit |
+| User Accounts | UID 0 audit, empty passwords, login shell count, password policy, NTP sync, AppArmor, Root Cron Job Hijack validation |
 | DNS & Mail Advanced | DMARC records, hostname resolution |
 
 ### Layer 2: `--backend` (Per-Domain File-Level Scan)
@@ -53,10 +53,10 @@ Scans the filesystem inside each domain's `public_html/`. Detects malware, leake
 | Category | Checks |
 |---|---|
 | File Exposure | `.env`, `.git/`, SQL dumps, config backups, debug files, private keys, adminer.php, Docker/composer/npm files |
-| PHP Malware | `eval(base64_decode())`, webshell signatures, PHP in uploads, cron injection, ClamAV directory-level scanner |
+| PHP Malware | `eval(base64_decode())`, webshell signatures, YARA rules (Deep Heuristics), PHP in uploads, cron injection, ClamAV directory-level scanner |
 | CMS Hardening | WordPress (wp-config perms, debug.log, file editing, table prefix, upload execution), Laravel (APP_DEBUG, APP_KEY), Drupal, Joomla, Magento, PrestaShop config permissions |
 | Permissions | World-writable items, ownership mismatch, SUID/SGID binaries, executable uploads, .htpasswd perms |
-| Integrity | .user.ini abuse (auto_prepend), recently modified PHP, hidden files, timthumb.php, symlinks outside home, large file dumps, error logs in public_html |
+| Integrity | .user.ini abuse (auto_prepend), recently modified PHP, hidden files, timthumb.php, Automated Symlink Sandbox Escape, large file dumps, error logs in public_html |
 
 ### Layer 3: `--frontend` (External HTTP/HTTPS Scan)
 Simulates an external attacker probing the website via HTTP. Uses only `curl` and `openssl`.
@@ -68,7 +68,7 @@ Simulates an external attacker probing the website via HTTP. Uses only `curl` an
 | Info Disclosure | `.env`/`.git`/`wp-config.php` accessible, path traversal, PHP errors, directory listing, generator meta tag |
 | WordPress-Specific | xmlrpc.php, REST API user enumeration, ?author= enumeration, wp-login.php exposure, wp-cron.php abuse |
 | Cookies | HttpOnly, Secure, SameSite flags on session cookies |
-| Misconfiguration | Open redirects, robots.txt sensitive paths, CORS wildcards, CAA DNS, mixed content, backup paths |
+| Misconfiguration | Open redirects, robots.txt sensitive paths, CORS wildcards (Arbitrary Origin Reflection Check), CAA DNS, mixed content, backup paths |
 
 ### Layer 4: `--pentest` (Offensive Self-Attack Simulation)
 Simulates a real hacker attacking the website. Actively attempts exploitation using `curl`, `openssl`, `dig`, and `nc`.
@@ -82,12 +82,12 @@ Simulates a real hacker attacking the website. Actively attempts exploitation us
 | Auth Attacks | Admin panel discovery (12 paths), default credential testing, WP user enumeration |
 | HTTP Methods | TRACE (XST), PUT (file write), DELETE, OPTIONS, verb tampering |
 | Header Injection | CRLF (URL + params), Host poisoning, X-Forwarded-Host reflection, XFF bypass |
-| SSRF | Internal IPs + cloud metadata endpoints × 6 params |
-| Brute-Force | Login rate-limit test (10 attempts), XMLRPC multicall amplification |
+| SSRF | Internal IPs (local subset/dict/gopher) + cloud metadata endpoints × 9 params + Referrer |
+| Brute-Force | Login rate-limit test (10 attempts), XMLRPC multicall amplification, XMLRPC Pingback DoS Simulation |
 | Upload Bypass | Directory listing, alternative PHP extensions (.phtml/.php5/.phar) |
 | Rate Limiting | 20-request flood test, REST API throttle test |
 | XXE | XML entity injection via root, xmlrpc.php, and SOAP endpoints |
-| WAF Evasion | WAF detection + 5 encoding-based bypass attempts |
+| WAF Evasion | WAF detection + 8 deep obfuscation attempts (Null-bytes, double URL encode, Waitfor) |
 | Backup Fuzzing | 73 paths: `.bak`, `.old`, `.swp`, `.sql`, `.zip`, `.git`, `.svn`, SSH keys, IDE files |
 | Error Disclosure | Null bytes, array injection, 404/500 info leakage, stack traces |
 | Session Attacks | Session fixation, password reset poisoning via Host header |
@@ -120,11 +120,14 @@ v-security-audit --all johndoe                   # Full audit for one user
 | Flag | Description |
 |---|---|
 | `--json` | Output results as JSON |
+| `--html` | Export an elegant HTML Interactive Dashboard |
+| `--md` | Export results as a Markdown file |
+| `--email [addr]`| Send HTML/Text report to Hestia Admin (or provided email) |
 | `--quiet` | Only show FAIL and CRITICAL |
 | `--verbose` | Show all checks including PASS |
 | `--no-color` | Disable ANSI colours |
 | `--skip-ssl` | Skip SSL/TLS checks |
-| `--skip-malware` | Skip PHP malware scan (faster) |
+| `--skip-malware` | Skip PHP malware/YARA scan (faster) |
 
 ---
 
@@ -159,8 +162,10 @@ ln -sf /root/hestiacp-useful-tools/scripts/security-audit/v-security-audit /usr/
 
 | Tool | Purpose | Install |
 |---|---|---|
-| `dig` | DNS checks (SPF, DKIM) | `apt install dnsutils` |
+| `dig` | DNS checks (SPF, DKIM, Zone transfers) | `apt install dnsutils` |
 | `jq` | JSON formatting | `apt install jq` |
+| `yara` | Advanced Web-Shell heuristics | `apt install yara` |
+| `clamav` | Malware signatures | `apt install clamav` |
 | `wp-cli` | WordPress user audit | Manual install |
 
 ---
