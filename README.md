@@ -75,6 +75,18 @@ Automation and maintenance scripts to enhance HestiaCP's default capabilities.
 - Checks SSL expiry, email blacklists, and database errors.
 - Sends a detailed HTML report to the admin.
 
+#### [Web Permissions Fixer (`v-fix-web-permissions`)](scripts/fix-web-permissions/)
+- Fixes `public_html` ownership and permissions — the gap `v-rebuild-web-domain` doesn't cover. Over time, manual uploads via `root` or `www-data` break the `user:user` ownership required by PHP-FPM, leading to silent update failures, `403 Forbidden` errors, or dangerous `777` permissions. This tool elegantly realigns the architecture without breaking sites.
+- Universal CMS support (WordPress, Laravel/Symfony, Drupal, Joomla, Magento, PrestaShop, OpenCart).
+- Universal Security Scan: detects exposed `.git` folders, `.env` files, debug scripts, and leftover `install/` dirs.
+- CMS Hardening: locks down config files (`wp-config.php`, `env.php`, `parameters.yml` to `640`) and ensures proper executable permissions for CLI frameworks.
+- Safe execution: Supports `--audit` (read-only) and `--dry` modes. Respects intentional strict configurations (`.no-fix-permissions` sentinel and `is_more_permissive_than` logic).
+
+#### [Security Audit (`v-security-audit`)](scripts/security-audit/)
+- Comprehensive, zero-dependency security auditor covering 4 layers: **System** (OS, SSH, Fail2Ban, DB, Mail), **Backend** (file exposure, PHP malware with ClamAV, CMS hardening, permissions per domain), **Frontend** (Advanced SSL/TLS, HTTP headers, Cache/TTFB benchmarking, Info disclosure), and **Pentest** (Offensive self-attack simulating real exploitation via injection, auth, network, and recon tests).
+- Features dynamic HTML, JSON, and Markdown report generation with scored validation (A–F) mapped to OWASP.
+- Scan by user, domain, URL, or entire server. Read-only — never modifies anything.
+
 ---
 
 ## 🚀 Installation

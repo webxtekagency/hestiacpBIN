@@ -151,6 +151,9 @@ install_config "$SRC_DIR/scripts/system-report/system-report.conf.sample" "/etc/
 echo "v-sync-backups:"
 install_script "$SRC_DIR/scripts/v-sync-backups/v-sync-backups" "v-sync-backups"
 
+echo "v-fix-web-permissions:"
+install_script "$SRC_DIR/scripts/fix-web-permissions/v-fix-web-permissions" "v-fix-web-permissions"
+
 # ---------------------------------------------------------------------------
 # CRON SETUP (only if --setup-crons was passed)
 # ---------------------------------------------------------------------------
