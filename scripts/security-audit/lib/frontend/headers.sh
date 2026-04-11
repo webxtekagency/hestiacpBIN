@@ -83,6 +83,18 @@ check_headers() {
     else
         result_fail "F17" "Missing Strict-Transport-Security header [${domain}]"
     fi
+
+    local cors_check
+    cors_check=$(curl -sI -m 5 -H "Origin: https://evil.com" -L "${url}/" 2>/dev/null)
+    local acao
+    acao=$(echo "$cors_check" | grep -i "^access-control-allow-origin:" | tr -d '\r\n')
+    if echo "$acao" | grep -qi "evil\.com"; then
+        result_critical "F18" "CORS Misconfiguration: reflects arbitrary Origin (https://evil.com) [${domain}]"
+    elif echo "$acao" | grep -q "\*"; then
+        result_warn "F18" "CORS allows wildcard (*) Origin [${domain}]"
+    else
+        result_pass "F18" "CORS policy correctly restricts cross-origin access [${domain}]"
+    fi
 }
 
 

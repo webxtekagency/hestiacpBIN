@@ -103,6 +103,21 @@ check_file_exposure() {
     else
         result_pass "B12" "No standalone DB managers exposed [${domain}]"
     fi
+
+    # Automated Symlink Bypass Testing
+    local symlink_test="${docroot}/.symlink_test_audit"
+    if ln -s /etc/passwd "$symlink_test" 2>/dev/null; then
+        local symlink_resp
+        symlink_resp=$(curl -s -m 5 "http://${domain}/.symlink_test_audit" 2>/dev/null | head -50)
+        if echo "$symlink_resp" | grep -q "root:x:0:0"; then
+            result_critical "B24" "Symlink bypass allowed! Web server follows symlinks to /etc/passwd [${domain}]"
+        else
+            result_pass "B24" "Symlink resolution outside docroot is blocked [${domain}]"
+        fi
+        rm -f "$symlink_test"
+    else
+        result_info "B24" "Could not create symlink to test FollowSymLinks enforcement [${domain}]"
+    fi
 }
 
 

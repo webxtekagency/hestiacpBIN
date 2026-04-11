@@ -25,6 +25,7 @@ run_system_checks() {
     check_mail
     check_kernel_hardening
     check_filesystem_security
+    check_suid_capabilities
     check_user_accounts
     check_dns_mail_advanced
 }

@@ -61,6 +61,36 @@ check_kernel_hardening() {
     else
         result_warn "S45" "SUID core dumps enabled (credential leak risk)"
     fi
+    
+    # Kernel CVE Profiling
+    local kver
+    kver=$(uname -r)
+    local kmain
+    kmain=$(echo "$kver" | awk -F. '{print $1"."$2}')
+    local kpatch
+    kpatch=$(echo "$kver" | awk -F. '{print $3}' | sed 's/-.*//')
+    
+    local dirty_cow=false
+    local dirty_pipe=false
+    
+    # Dirty COW (CVE-2016-5195) affects < 4.8.3, or 3.x, 2.x
+    if echo "$kmain" | grep -qE "^[23]\." || ( [ "$kmain" = "4.8" ] && [ "$kpatch" -lt 3 ] ); then dirty_cow=true; fi
+    # Dirty Pipe (CVE-2022-0847) affects 5.8 to 5.16.11, 5.15.25, 5.10.102
+    if echo "$kmain" | grep -qE "^5\.(8|9|1[0-6])$"; then
+        if [ "$kmain" = "5.16" ] && [ "$kpatch" -lt 11 ] 2>/dev/null; then dirty_pipe=true; fi
+        if [ "$kmain" = "5.15" ] && [ "$kpatch" -lt 25 ] 2>/dev/null; then dirty_pipe=true; fi
+        if [ "$kmain" = "5.10" ] && [ "$kpatch" -lt 102 ] 2>/dev/null; then dirty_pipe=true; fi
+    fi
+    
+    if $dirty_cow; then
+        result_critical "S60" "Kernel ${kver} is potentially vulnerable to Dirty COW (CVE-2016-5195) LPE"
+    fi
+    if $dirty_pipe; then
+        result_critical "S61" "Kernel ${kver} is potentially vulnerable to Dirty Pipe (CVE-2022-0847) LPE"
+    fi
+    if ! $dirty_cow && ! $dirty_pipe; then
+        result_pass "S60" "Kernel ${kver} is not vulnerable to common Dirty COW/Pipe LPEs"
+    fi
 }
 
 

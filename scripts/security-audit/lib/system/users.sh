@@ -60,6 +60,33 @@ check_user_accounts() {
     else
         result_info "S58" "AppArmor not installed (optional hardening)"
     fi
+
+    # Cron Job Permission Hijacks
+    local cron_vulnerable=false
+    local cron_files="/etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root"
+    for cfile in $cron_files; do
+        if [ -f "$cfile" ]; then
+            local risky_jobs
+            risky_jobs=$(grep -v '^#' "$cfile" 2>/dev/null | grep -E "(/home/|/tmp/|/var/www/|/var/tmp/)" | awk '{for(i=6;i<=NF;i++) print $i}' | sed 's/;//' | grep -v 'root' 2>/dev/null || true)
+            if [ -n "$risky_jobs" ]; then
+                for task in $risky_jobs; do
+                    if [ -f "$task" ]; then
+                        local file_owner
+                        file_owner=$(stat -c '%U' "$task" 2>/dev/null)
+                        local file_perms
+                        file_perms=$(stat -c '%a' "$task" 2>/dev/null)
+                        if [ "$file_owner" != "root" ] || echo "$file_perms" | grep -qE "(.[2367].)|(..[2367])"; then
+                            result_critical "S64" "Root cron job executes user-writable script: ${task} [LPE risk in ${cfile}]"
+                            cron_vulnerable=true
+                        fi
+                    fi
+                done
+            fi
+        fi
+    done
+    if ! $cron_vulnerable; then
+        result_pass "S64" "No root cron jobs execute user-writable scripts"
+    fi
 }
 
 

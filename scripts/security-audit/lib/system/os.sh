@@ -78,5 +78,34 @@ check_critical_updates() {
     fi
 }
 
+check_suid_capabilities() {
+    section "SYSTEM" "Binary Capabilities & SUID Audit"
+
+    local dangerous_suid="find|nmap|tar|awk|sed|bash|sh|php|python|perl|ruby|cp|mv|vim|nano"
+    
+    local suid_files
+    suid_files=$(find /usr/bin /usr/sbin /bin /sbin /usr/local/bin /usr/local/sbin -type f -perm -4000 2>/dev/null | grep -iE "($dangerous_suid)$")
+    
+    if [ -n "$suid_files" ]; then
+        local count
+        count=$(echo "$suid_files" | wc -l)
+        result_critical "S62" "Found ${count} highly dangerous SUID binaries (LPE risk)"
+    else
+        result_pass "S62" "No exceptionally dangerous SUID binaries found in standard paths"
+    fi
+
+    if command_exists getcap; then
+        local caps
+        caps=$(getcap /usr/bin/* /usr/sbin/* /bin/* /sbin/* 2>/dev/null | grep -qiE "cap_setuid|cap_setgid|cap_dac_override")
+        if [ $? -eq 0 ]; then
+            result_fail "S63" "Found binaries with powerful capabilities (cap_setuid/dac_override)"
+        else
+            result_pass "S63" "No excessively powerful capabilities assigned to binaries"
+        fi
+    else
+        result_skip "S63" "getcap not installed, skipping capabilities check"
+    fi
+}
+
 
 
