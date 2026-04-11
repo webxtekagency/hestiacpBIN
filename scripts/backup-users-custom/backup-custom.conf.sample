@@ -1,0 +1,16 @@
+# Configuration for v-backup-users-custom
+# Place this file at /etc/hestiacp-backup-custom.conf
+
+#==========================================
+# ADMIN CONFIGURATION
+#==========================================
+# Override the admin user/email for notifications
+ADMIN_USER_OVERRIDE=""
+ADMIN_EMAIL_OVERRIDE=""
+
+#==========================================
+# BACKUP RETENTION
+#==========================================
+# Keep only 1 backup per user from previous months (TRUE/FALSE)
+# This helps save space by removing intermediate backups from past months
+KEEP_ONLY_ONE_OLD_BACKUP="TRUE"
